@@ -1,0 +1,19 @@
+diff --git a/conn/winrio/rio_windows.go b/conn/winrio/rio_windows.go
+index d1037bb..4e6a4fb 100644
+--- a/conn/winrio/rio_windows.go
++++ b/conn/winrio/rio_windows.go
+@@ -121,6 +121,14 @@ func Initialize() bool {
+ 			return
+ 		}
+ 
++		// fix windows udp reset
++		ret := uint32(0)
++		flag := uint32(0)
++		size := uint32(unsafe.Sizeof(flag))
++		windows.WSAIoctl(socket, syscall.SIO_UDP_CONNRESET, (*byte)(unsafe.Pointer(&flag)), size, nil, 0, &ret, nil, 0)
++		// SIO_UDP_NETRESET
++		windows.WSAIoctl(socket, syscall.SIO_UDP_CONNRESET+3, (*byte)(unsafe.Pointer(&flag)), size, nil, 0, &ret, nil, 0)
++
+ 		// While we should be able to stop here, after getting the function pointers, some anti-virus actually causes
+ 		// failures in RIOCreateRequestQueue, so keep going to be certain this is supported.
+ 		var iocp windows.Handle

@@ -1,0 +1,48 @@
+diff --git a/go.mod b/go.mod
+index 19136dcf..4cc4f294 100644
+--- a/go.mod
++++ b/go.mod
+@@ -2,6 +2,8 @@ module tailscale.com
+ 
+ go 1.20
+ 
++replace github.com/tailscale/wireguard-go => ../wireguard-go
++
+ require (
+ 	filippo.io/mkcert v1.4.3
+ 	github.com/Microsoft/go-winio v0.6.0
+diff --git a/net/tsaddr/tsaddr.go b/net/tsaddr/tsaddr.go
+index 34259b69..788df2bf 100644
+--- a/net/tsaddr/tsaddr.go
++++ b/net/tsaddr/tsaddr.go
+@@ -24,6 +24,18 @@ func ChromeOSVMRange() netip.Prefix {
+ 
+ var chromeOSRange oncePrefix
+ 
++func CustomNetRange() netip.Prefix {
++	customNetRange.Do(func() { mustPrefix(&customNetRange.v, "172.22.98.0/24") })
++	return customNetRange.v
++}
++func CustomNet6Range() netip.Prefix {
++	customNet6Range.Do(func() { mustPrefix(&customNet6Range.v, "fd00:3d22:4e98:cafe::/64") })
++	return customNet6Range.v
++}
++
++var customNetRange oncePrefix
++var customNet6Range oncePrefix
++
+ // CGNATRange returns the Carrier Grade NAT address range that
+ // is the superset range that Tailscale assigns out of.
+ // See https://tailscale.com/s/cgnat
+@@ -69,9 +81,9 @@ func TailscaleServiceIPv6() netip.Addr {
+ // Tailscale assigns from.
+ func IsTailscaleIP(ip netip.Addr) bool {
+ 	if ip.Is4() {
+-		return CGNATRange().Contains(ip) && !ChromeOSVMRange().Contains(ip)
++		return CustomNetRange().Contains(ip) || (CGNATRange().Contains(ip) && !ChromeOSVMRange().Contains(ip))
+ 	}
+-	return TailscaleULARange().Contains(ip)
++	return CustomNet6Range().Contains(ip) || TailscaleULARange().Contains(ip)
+ }
+ 
+ // TailscaleULARange returns the IPv6 Unique Local Address range that

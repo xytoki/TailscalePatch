@@ -1,0 +1,9 @@
+{
+    "dependencies": {
+        "zx": "^7.2.1"
+    },
+    "scripts": {
+        "patch-pre": "zx scripts/patch-pre.mjs",
+        "patch-post": "zx scripts/patch-post.mjs"
+    }
+}
