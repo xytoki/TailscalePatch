@@ -17,3 +17,28 @@ index d1037bb..4e6a4fb 100644
  		// While we should be able to stop here, after getting the function pointers, some anti-virus actually causes
  		// failures in RIOCreateRequestQueue, so keep going to be certain this is supported.
  		var iocp windows.Handle
+diff --git a/device/receive.go b/device/receive.go
+index 744bf18..f270848 100644
+--- a/device/receive.go
++++ b/device/receive.go
+@@ -10,6 +10,7 @@ import (
+ 	"encoding/binary"
+ 	"errors"
+ 	"net"
++	"strings"
+ 	"sync"
+ 	"time"
+ 
+@@ -111,6 +112,12 @@ func (device *Device) RoutineReceiveIncoming(maxBatchSize int, recv conn.Receive
+ 			}
+ 			device.log.Verbosef("Failed to receive %s packet: %v", recvName, err)
+ 			if neterr, ok := err.(net.Error); ok && !neterr.Temporary() {
++				if syserr, ok := neterr.(*net.OpError); ok {
++					if strings.Contains(syserr.Err.Error(), "keep-alive activity") {
++						device.log.Verbosef("WSAENETRESET ignored")
++						continue
++					}
++				}
+ 				return
+ 			}
+ 			if deathSpiral < 10 {
