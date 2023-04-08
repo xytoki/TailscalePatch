@@ -1,0 +1,34 @@
+name: Build Production
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      - uses: szenius/set-timezone@v1.1
+        with:
+          timezoneLinux: "Asia/Shanghai"
+          timezoneMacos: "Asia/Shanghai"
+          timezoneWindows: "China Standard Time"
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8.1.1
+      - name: Install patcher dependencies
+        run: sudo apt-get update && bash scripts/pepare-deb.sh && pnpm i --no-frozen-lockfile
+      - name: Pre-Patch
+        run: pnpm patch-pre
+      - name: Build windows x86_64
+        run: pnpm build
+      - name: MSI Repack
+        run: pnpm msipack
+      - name: Artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: tailscale-setup-patched-amd64
+          path: dist/*.msi
+          retention-days: 30
