@@ -1,4 +1,5 @@
 tailscale/
+tailscale-android/
 wireguard-go/
 node_modules/
 dist/

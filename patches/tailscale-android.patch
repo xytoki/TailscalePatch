@@ -1,0 +1,15 @@
+diff --git a/go.mod b/go.mod
+index c8bd15d..8e47873 100644
+--- a/go.mod
++++ b/go.mod
+@@ -2,6 +2,10 @@ module github.com/tailscale/tailscale-android
+ 
+ go 1.20
+ 
++
++replace github.com/tailscale/wireguard-go => ../wireguard-go
++replace tailscale.com => ../tailscale
++
+ require (
+ 	eliasnaur.com/font v0.0.0-20220124212145-832bb8fc08c3
+ 	gioui.org v0.0.0-20230206180804-32c6a9b10d0b

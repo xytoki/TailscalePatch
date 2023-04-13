@@ -26,9 +26,17 @@ jobs:
         run: pnpm build
       - name: MSI Repack
         run: pnpm msipack
-      - name: Artifact
+      - name: Windows artifact
         uses: actions/upload-artifact@v2
         with:
           name: tailscale-setup-patched-amd64
           path: dist/*.msi
+          retention-days: 30
+      - name: Build Android
+        run: pnpm build-android
+      - name: Android artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: tailscale-android-patched
+          path: tailscale-android/*.apk
           retention-days: 30

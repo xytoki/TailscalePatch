@@ -6,6 +6,7 @@
         "patch-pre": "zx scripts/patch-pre.mjs",
         "patch-post": "zx scripts/patch-post.mjs",
         "build": "zx scripts/build.mjs",
+        "build-android": "zx scripts/build-android.mjs",
         "msipack": "zx scripts/msipack.mjs"
     }
 }
