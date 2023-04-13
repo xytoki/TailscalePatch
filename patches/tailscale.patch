@@ -11,6 +11,37 @@ index 19136dcf..4cc4f294 100644
  require (
  	filippo.io/mkcert v1.4.3
  	github.com/Microsoft/go-winio v0.6.0
+diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
+index d53eb7ee..511983fb 100644
+--- a/net/netcheck/netcheck.go
++++ b/net/netcheck/netcheck.go
+@@ -1126,7 +1126,7 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+ 		return false, nil
+ 	}
+ 
+-	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+node.HostName+"/generate_204", nil)
++	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+node.HostName+":"+fmt.Sprint(node.DERPPort)+"/generate_204", nil)
+ 	if err != nil {
+ 		return false, err
+ 	}
+@@ -1177,7 +1177,7 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
+ 		go func() {
+ 			defer wg.Done()
+ 			node := rg.Nodes[0]
+-			req, _ := http.NewRequestWithContext(ctx, "HEAD", "https://"+node.HostName+"/derp/probe", nil)
++			req, _ := http.NewRequestWithContext(ctx, "HEAD", "https://"+node.HostName+":"+fmt.Sprint(node.DERPPort)+"/derp/probe", nil)
+ 			// One warm-up one to get HTTP connection set
+ 			// up and get a connection from the browser's
+ 			// pool.
+@@ -1249,7 +1249,7 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
+ 	}
+ 	hc := &http.Client{Transport: tr}
+ 
+-	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+"/derp/latency-check", nil)
++	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+":"+fmt.Sprint(node.DERPPort)+"/derp/latency-check", nil)
+ 	if err != nil {
+ 		return 0, ip, err
+ 	}
 diff --git a/net/tsaddr/tsaddr.go b/net/tsaddr/tsaddr.go
 index 34259b69..788df2bf 100644
 --- a/net/tsaddr/tsaddr.go
