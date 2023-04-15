@@ -1,5 +1,5 @@
 diff --git a/cmd/tailscale/main.go b/cmd/tailscale/main.go
-index 121f93a..a597a75 100644
+index 121f93a..ba1e44b 100644
 --- a/cmd/tailscale/main.go
 +++ b/cmd/tailscale/main.go
 @@ -38,6 +38,7 @@ import (
@@ -19,23 +19,25 @@ index 121f93a..a597a75 100644
  }
  
  // UIEvent is an event flowing from the UI to the backend.
-@@ -402,6 +405,15 @@ func (a *App) runBackend() error {
+@@ -402,6 +405,17 @@ func (a *App) runBackend() error {
  					alarm(a.notifyExpiry(service, m.Expiry))
  				}
  			}
 +			if e := n.Engine; e != nil {
-+				st := b.backend.Status()
-+				peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
-+				for _, p := range st.Peer {
-+					peers[p.ID] = p
++				if state.State == ipn.Running {
++					st := b.backend.Status()
++					peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
++					for _, p := range st.Peer {
++						peers[p.ID] = p
++					}
++					state.Status = peers
++					a.notify(state)
 +				}
-+				state.Status = peers
-+				a.notify(state)
 +			}
  			// Notify if a previously online exit is not longer online (or missing).
  			if service != 0 && exitWasOnline && state.ExitStatus == ExitOffline {
  				a.pushNotify(service, "Connection Lost", "Your exit node is offline. Disable your exit node or contact your network admin for help.")
-@@ -1039,6 +1051,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1039,6 +1053,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  	}
  
  	netmap := state.backend.NetworkMap
@@ -43,7 +45,7 @@ index 121f93a..a597a75 100644
  	var (
  		peers []*tailcfg.Node
  		myID  tailcfg.UserID
-@@ -1065,15 +1078,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1065,15 +1080,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  		}
  		users[p.User] = struct{}{}
  		uiPeers = append(uiPeers, UIPeer{
@@ -64,7 +66,7 @@ index 121f93a..a597a75 100644
  	sort.Slice(uiPeers, func(i, j int) bool {
  		lhs, rhs := uiPeers[i], uiPeers[j]
 diff --git a/cmd/tailscale/ui.go b/cmd/tailscale/ui.go
-index e6d3560..40b0213 100644
+index e6d3560..5d7802f 100644
 --- a/cmd/tailscale/ui.go
 +++ b/cmd/tailscale/ui.go
 @@ -30,6 +30,7 @@ import (
@@ -84,15 +86,13 @@ index e6d3560..40b0213 100644
  }
  
  // menuItem describes an item in a popup menu.
-@@ -1412,7 +1415,15 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
+@@ -1412,7 +1415,13 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
  				layout.Rigid(func(gtx C) D {
  					return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
  						name := p.Peer.DisplayName(p.Peer.User == user)
 -						return material.H6(ui.theme, name).Layout(gtx)
 +						var color color.NRGBA
-+						if p.Status != nil && p.Status.Online {
-+							color = rgb(0x434343)
-+						} else {
++						if p.Status == nil || p.Status.Online {
 +							color = rgb(0x8f8f8f)
 +						}
 +						label := material.H6(ui.theme, name)
@@ -101,7 +101,7 @@ index e6d3560..40b0213 100644
  					})
  				}),
  				layout.Rigid(func(gtx C) D {
-@@ -1422,7 +1433,15 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
+@@ -1422,8 +1431,17 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
  							bestIP = ip
  						}
  					}
@@ -116,8 +116,10 @@ index e6d3560..40b0213 100644
 +					}
 +					l := material.Body2(ui.theme, bodystr)
  					l.Color = rgb(0x434343)
++					l.Font.Typeface = "Roboto Mono"
  					return l.Layout(gtx)
  				}),
+ 			)
 diff --git a/go.mod b/go.mod
 index c8bd15d..8e47873 100644
 --- a/go.mod
