@@ -1,3 +1,123 @@
+diff --git a/cmd/tailscale/main.go b/cmd/tailscale/main.go
+index 121f93a..a597a75 100644
+--- a/cmd/tailscale/main.go
++++ b/cmd/tailscale/main.go
+@@ -38,6 +38,7 @@ import (
+ 	"tailscale.com/hostinfo"
+ 	"tailscale.com/ipn"
+ 	"tailscale.com/ipn/ipnlocal"
++	"tailscale.com/ipn/ipnstate"
+ 	"tailscale.com/net/dns"
+ 	"tailscale.com/net/interfaces"
+ 	"tailscale.com/net/netns"
+@@ -151,6 +152,8 @@ type BackendState struct {
+ 	ExitStatus ExitStatus
+ 	// Exit is our current exit node, if any.
+ 	Exit Peer
++
++	Status map[tailcfg.StableNodeID]*ipnstate.PeerStatus
+ }
+ 
+ // UIEvent is an event flowing from the UI to the backend.
+@@ -402,6 +405,15 @@ func (a *App) runBackend() error {
+ 					alarm(a.notifyExpiry(service, m.Expiry))
+ 				}
+ 			}
++			if e := n.Engine; e != nil {
++				st := b.backend.Status()
++				peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
++				for _, p := range st.Peer {
++					peers[p.ID] = p
++				}
++				state.Status = peers
++				a.notify(state)
++			}
+ 			// Notify if a previously online exit is not longer online (or missing).
+ 			if service != 0 && exitWasOnline && state.ExitStatus == ExitOffline {
+ 				a.pushNotify(service, "Connection Lost", "Your exit node is offline. Disable your exit node or contact your network admin for help.")
+@@ -1039,6 +1051,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+ 	}
+ 
+ 	netmap := state.backend.NetworkMap
++	pstatus := state.backend.Status
+ 	var (
+ 		peers []*tailcfg.Node
+ 		myID  tailcfg.UserID
+@@ -1065,15 +1078,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+ 		}
+ 		users[p.User] = struct{}{}
+ 		uiPeers = append(uiPeers, UIPeer{
+-			Owner: p.User,
+-			Peer:  p,
++			Owner:  p.User,
++			Peer:   p,
++			Status: pstatus[p.StableID],
+ 		})
+ 	}
+ 	// Add section (user) headers.
+ 	for u := range users {
+ 		name := netmap.UserProfiles[u].DisplayName
+ 		name = strings.ToUpper(name)
+-		uiPeers = append(uiPeers, UIPeer{Owner: u, Name: name})
++		uiPeers = append(uiPeers, UIPeer{Owner: u, Name: name, Status: nil})
+ 	}
+ 	sort.Slice(uiPeers, func(i, j int) bool {
+ 		lhs, rhs := uiPeers[i], uiPeers[j]
+diff --git a/cmd/tailscale/ui.go b/cmd/tailscale/ui.go
+index e6d3560..40b0213 100644
+--- a/cmd/tailscale/ui.go
++++ b/cmd/tailscale/ui.go
+@@ -30,6 +30,7 @@ import (
+ 	"golang.org/x/exp/shiny/materialdesign/icons"
+ 	"tailscale.com/client/tailscale/apitype"
+ 	"tailscale.com/ipn"
++	"tailscale.com/ipn/ipnstate"
+ 	"tailscale.com/tailcfg"
+ 	"tailscale.com/version"
+ 
+@@ -182,6 +183,8 @@ type UIPeer struct {
+ 	Name string
+ 	// Peer is nil for section headers.
+ 	Peer *tailcfg.Node
++
++	Status *ipnstate.PeerStatus
+ }
+ 
+ // menuItem describes an item in a popup menu.
+@@ -1412,7 +1415,15 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
+ 				layout.Rigid(func(gtx C) D {
+ 					return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
+ 						name := p.Peer.DisplayName(p.Peer.User == user)
+-						return material.H6(ui.theme, name).Layout(gtx)
++						var color color.NRGBA
++						if p.Status != nil && p.Status.Online {
++							color = rgb(0x434343)
++						} else {
++							color = rgb(0x8f8f8f)
++						}
++						label := material.H6(ui.theme, name)
++						label.Color = color
++						return label.Layout(gtx)
+ 					})
+ 				}),
+ 				layout.Rigid(func(gtx C) D {
+@@ -1422,7 +1433,15 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
+ 							bestIP = ip
+ 						}
+ 					}
+-					l := material.Body2(ui.theme, bestIP.String())
++					bodystr := bestIP.String()
++					if p.Status != nil && p.Status.Online {
++						if p.Status.Relay != "" && p.Status.CurAddr == "" {
++							bodystr += " R " + p.Status.Relay
++						} else if p.Status.CurAddr != "" {
++							bodystr += " D " + p.Status.CurAddr
++						}
++					}
++					l := material.Body2(ui.theme, bodystr)
+ 					l.Color = rgb(0x434343)
+ 					return l.Layout(gtx)
+ 				}),
 diff --git a/go.mod b/go.mod
 index c8bd15d..8e47873 100644
 --- a/go.mod
