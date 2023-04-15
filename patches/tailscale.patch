@@ -12,36 +12,71 @@ index 19136dcf..4cc4f294 100644
  	filippo.io/mkcert v1.4.3
  	github.com/Microsoft/go-winio v0.6.0
 diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
-index d53eb7ee..511983fb 100644
+index d53eb7ee..fff25dae 100644
 --- a/net/netcheck/netcheck.go
 +++ b/net/netcheck/netcheck.go
-@@ -1126,7 +1126,7 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+@@ -1106,7 +1106,7 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+ 		(preferredDERP != 0 && len(dm.Regions[preferredDERP].Nodes) == 0) {
+ 		rids := make([]int, 0, len(dm.Regions))
+ 		for id, reg := range dm.Regions {
+-			if reg == nil || reg.Avoid || len(reg.Nodes) == 0 {
++			if reg == nil || reg.Avoid || len(reg.Nodes) == 0 || reg.Nodes[0].DERPPort != 0 {
+ 				continue
+ 			}
+ 			rids = append(rids, id)
+@@ -1125,8 +1125,11 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+ 		// TODO(bradfitz,andrew-d): how to actually handle this nicely?
  		return false, nil
  	}
- 
+-
 -	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+node.HostName+"/generate_204", nil)
-+	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+node.HostName+":"+fmt.Sprint(node.DERPPort)+"/generate_204", nil)
++	httpport := 80
++	if node.DERPPort != 0 {
++		httpport = node.DERPPort
++	}
++	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+node.HostName+":"+fmt.Sprint(httpport)+"/generate_204", nil)
  	if err != nil {
  		return false, err
  	}
-@@ -1177,7 +1177,7 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
+@@ -1177,7 +1180,11 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
  		go func() {
  			defer wg.Done()
  			node := rg.Nodes[0]
 -			req, _ := http.NewRequestWithContext(ctx, "HEAD", "https://"+node.HostName+"/derp/probe", nil)
-+			req, _ := http.NewRequestWithContext(ctx, "HEAD", "https://"+node.HostName+":"+fmt.Sprint(node.DERPPort)+"/derp/probe", nil)
++			tlsport := 443
++			if node.DERPPort != 0 {
++				tlsport = node.DERPPort
++			}
++			req, _ := http.NewRequestWithContext(ctx, "HEAD", "https://"+node.HostName+":"+fmt.Sprint(tlsport)+"/derp/probe", nil)
  			// One warm-up one to get HTTP connection set
  			// up and get a connection from the browser's
  			// pool.
-@@ -1249,7 +1249,7 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
+@@ -1248,8 +1255,11 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
+ 		},
  	}
  	hc := &http.Client{Transport: tr}
- 
+-
 -	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+"/derp/latency-check", nil)
-+	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+":"+fmt.Sprint(node.DERPPort)+"/derp/latency-check", nil)
++	tlsport := 443
++	if node.DERPPort != 0 {
++		tlsport = node.DERPPort
++	}
++	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+node.HostName+":"+fmt.Sprint(tlsport)+"/derp/latency-check", nil)
  	if err != nil {
  		return 0, ip, err
  	}
+@@ -1448,6 +1458,11 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report) {
+ 	var bestAny time.Duration
+ 	var oldRegionCurLatency time.Duration
+ 	for regionID, d := range r.RegionLatency {
++		if regionID < 0 {
++			// STUNOnly is not readable here
++			// so use negative region IDs to mark stun-only servers
++			continue
++		}
+ 		if regionID == prevDERP {
+ 			oldRegionCurLatency = d
+ 		}
 diff --git a/net/tsaddr/tsaddr.go b/net/tsaddr/tsaddr.go
 index 34259b69..788df2bf 100644
 --- a/net/tsaddr/tsaddr.go
