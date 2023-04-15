@@ -39,7 +39,7 @@ jobs:
         if: matrix.platform == 'windows'
         uses: actions/upload-artifact@v3
         with:
-          name: tailscale-setup-patched-amd64
+          name: tailscale-windows-setup-patched-amd64
           path: dist/*.msi
           retention-days: 30
       - name: Build Linux x86_64
@@ -47,10 +47,10 @@ jobs:
         run: pnpm build -- --linux
       - name: Linux artifact
         if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v3
+        uses: initdc/upload-artifact@feat/artifact-per-file
         with:
-          name: tailscale-linux-patched-amd64
-          path: dist/*
+          path: dist/*.*
+          artifact-per-file: true
           retention-days: 30
       - name: Cache Gradle packages
         if: matrix.platform == 'android'
