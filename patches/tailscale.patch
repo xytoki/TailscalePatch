@@ -78,30 +78,45 @@ index 34259b69..788df2bf 100644
  
  // TailscaleULARange returns the IPv6 Unique Local Address range that
 diff --git a/wgengine/wgcfg/nmcfg/nmcfg.go b/wgengine/wgcfg/nmcfg/nmcfg.go
-index d07f7232..f3195529 100644
+index d07f7232..e16671aa 100644
 --- a/wgengine/wgcfg/nmcfg/nmcfg.go
 +++ b/wgengine/wgcfg/nmcfg/nmcfg.go
-@@ -102,6 +102,7 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
+@@ -102,6 +102,17 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
  
  		didExitNodeWarn := false
  		cpeer.V4MasqAddr = peer.SelfNodeV4MasqAddrForThisPeer
-+		localIps := nm.Addresses
++		var localIps []netip.Addr
++		if nm.SelfNode != nil {
++			for _, ep := range nm.SelfNode.Endpoints {
++				addr, err := netip.ParseAddrPort(ep)
++				if err == nil {
++					localIps = append(localIps, addr.Addr())
++				} else {
++					logf("[v1] wgcfg: unable to parse endpoint %q: %v", ep, err)
++				}
++			}
++		}
  		for _, allowedIP := range peer.AllowedIPs {
  			if allowedIP.Bits() == 0 && peer.StableID != exitNode {
  				if didExitNodeWarn {
-@@ -127,6 +128,16 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
+@@ -127,6 +138,21 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
  					}
  					fmt.Fprintf(skippedSubnets, "%v from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key.ShortString())
  					continue
 +				} else {
++					ignoreRoute := false
 +					for _, localIP := range localIps {
-+						if allowedIP.Contains(localIP.Addr()) {
-+							if skippedSubnets.Len() > 0 {
-+								skippedSubnets.WriteString(", ")
-+							}
-+							fmt.Fprintf(skippedSubnets, "%v (local) from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key.ShortString())
-+							continue
++						if allowedIP.Contains(localIP) {
++							ignoreRoute = true
++							break
 +						}
++					}
++					if ignoreRoute {
++						if skippedSubnets.Len() > 0 {
++							skippedSubnets.WriteString(", ")
++						}
++						fmt.Fprintf(skippedSubnets, "%v (localip) from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key.ShortString())
++						continue
 +					}
  				}
  			}
