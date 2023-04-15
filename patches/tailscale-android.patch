@@ -1,5 +1,5 @@
 diff --git a/cmd/tailscale/main.go b/cmd/tailscale/main.go
-index 121f93a..1bc9442 100644
+index 121f93a..4b1e25f 100644
 --- a/cmd/tailscale/main.go
 +++ b/cmd/tailscale/main.go
 @@ -38,6 +38,7 @@ import (
@@ -40,7 +40,17 @@ index 121f93a..1bc9442 100644
  			// Notify if a previously online exit is not longer online (or missing).
  			if service != 0 && exitWasOnline && state.ExitStatus == ExitOffline {
  				a.pushNotify(service, "Connection Lost", "Your exit node is offline. Disable your exit node or contact your network admin for help.")
-@@ -1039,6 +1056,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -900,6 +917,9 @@ func (a *App) runUI() error {
+ 			ui.enabled.Value = p.WantRunning
+ 			ui.runningExit = p.AdvertisesExitNode()
+ 			ui.exitLAN.Value = p.ExitNodeAllowLANAccess
++			ui.useTailscaleDNS.Value = p.CorpDNS
++			ui.useTailscaleSubnets.Value = p.RouteAll
++			ui.allowIncomingTransactions.Value = p.ShieldsUp
+ 			w.Invalidate()
+ 		case url := <-a.browseURLs:
+ 			ui.signinType = noSignin
+@@ -1039,6 +1059,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  	}
  
  	netmap := state.backend.NetworkMap
@@ -48,7 +58,7 @@ index 121f93a..1bc9442 100644
  	var (
  		peers []*tailcfg.Node
  		myID  tailcfg.UserID
-@@ -1065,15 +1083,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1065,15 +1086,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  		}
  		users[p.User] = struct{}{}
  		uiPeers = append(uiPeers, UIPeer{
