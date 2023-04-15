@@ -49,6 +49,13 @@ jobs:
           name: tailscale-linux-patched-amd64
           path: dist/*
           retention-days: 30
+      - name: Cache Gradle packages
+        if: matrix.platform == 'android'
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
       - name: Build Android
         if: matrix.platform == 'android'
         run: pnpm build-android
