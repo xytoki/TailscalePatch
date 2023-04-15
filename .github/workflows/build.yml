@@ -22,8 +22,11 @@ jobs:
       - uses: pnpm/action-setup@v2
         with:
           version: 8.1.1
+      - name: Install patcher dependencies for windows
+        if: matrix.platform == 'windows'
+        run: sudo apt-get update && bash scripts/pepare-deb.sh
       - name: Install patcher dependencies
-        run: sudo apt-get update && bash scripts/pepare-deb.sh && pnpm i --no-frozen-lockfile
+        run: pnpm i --no-frozen-lockfile
       - name: Pre-Patch
         run: pnpm patch-pre
       - name: Build windows x86_64
