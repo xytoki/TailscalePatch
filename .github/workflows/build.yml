@@ -1,10 +1,14 @@
-name: Build Production
+name: Build Matrix
 on:
+  push:
   workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
     name: Build
+    strategy:
+      matrix:
+        platform: [windows, android, linux]
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
@@ -23,19 +27,34 @@ jobs:
       - name: Pre-Patch
         run: pnpm patch-pre
       - name: Build windows x86_64
-        run: pnpm build
+        if: matrix.platform == 'windows'
+        run: pnpm build -- --windows
       - name: MSI Repack
+        if: matrix.platform == 'windows'
         run: pnpm msipack
       - name: Windows artifact
-        uses: actions/upload-artifact@v2
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v3
         with:
           name: tailscale-setup-patched-amd64
           path: dist/*.msi
           retention-days: 30
+      - name: Build Linux x86_64
+        if: matrix.platform == 'linux'
+        run: pnpm build -- --linux
+      - name: Linux artifact
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v3
+        with:
+          name: tailscale-linux-patched-amd64
+          path: dist/*
+          retention-days: 30
       - name: Build Android
+        if: matrix.platform == 'android'
         run: pnpm build-android
       - name: Android artifact
-        uses: actions/upload-artifact@v2
+        if: matrix.platform == 'android'
+        uses: actions/upload-artifact@v3
         with:
           name: tailscale-android-patched
           path: tailscale-android/*.apk
