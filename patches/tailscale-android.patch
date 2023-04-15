@@ -69,7 +69,7 @@ index 121f93a..1bc9442 100644
  	sort.Slice(uiPeers, func(i, j int) bool {
  		lhs, rhs := uiPeers[i], uiPeers[j]
 diff --git a/cmd/tailscale/ui.go b/cmd/tailscale/ui.go
-index e6d3560..375736b 100644
+index e6d3560..e9ef4c0 100644
 --- a/cmd/tailscale/ui.go
 +++ b/cmd/tailscale/ui.go
 @@ -30,6 +30,7 @@ import (
@@ -111,23 +111,23 @@ index e6d3560..375736b 100644
 -					l := material.Body2(ui.theme, bestIP.String())
 -					l.Color = rgb(0x434343)
 -					return l.Layout(gtx)
-+					bodystr := ""
++					var connstr string
 +					if p.Status != nil && p.Status.Online {
 +						if p.Status.Relay != "" && p.Status.CurAddr == "" {
-+							bodystr += "R " + p.Status.Relay
++							connstr = p.Status.Relay
 +						} else if p.Status.CurAddr != "" {
-+							bodystr += "D " + p.Status.CurAddr
++							connstr = p.Status.CurAddr
 +						}
 +					}
 +					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-+						layout.Rigid(func(gtx C) D {
++						layout.Flexed(4.0, func(gtx C) D {
 +							l := material.Body2(ui.theme, bestIP.String())
 +							l.Color = rgb(0x434343)
 +							l.Font.Variant = "Mono"
 +							return l.Layout(gtx)
 +						}),
-+						layout.Rigid(func(gtx C) D {
-+							l := material.Body2(ui.theme, bodystr)
++						layout.Flexed(5.0, func(gtx C) D {
++							l := material.Body2(ui.theme, connstr)
 +							l.Color = rgb(0x434343)
 +							l.Font.Variant = "Mono"
 +							l.Alignment = text.End
