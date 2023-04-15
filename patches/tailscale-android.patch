@@ -1,5 +1,5 @@
 diff --git a/cmd/tailscale/main.go b/cmd/tailscale/main.go
-index 121f93a..ba1e44b 100644
+index 121f93a..1bc9442 100644
 --- a/cmd/tailscale/main.go
 +++ b/cmd/tailscale/main.go
 @@ -38,6 +38,7 @@ import (
@@ -19,11 +19,11 @@ index 121f93a..ba1e44b 100644
  }
  
  // UIEvent is an event flowing from the UI to the backend.
-@@ -402,6 +405,17 @@ func (a *App) runBackend() error {
+@@ -402,6 +405,20 @@ func (a *App) runBackend() error {
  					alarm(a.notifyExpiry(service, m.Expiry))
  				}
  			}
-+			if e := n.Engine; e != nil {
++			if n.Engine != nil || n.NetMap != nil || n.State != nil {
 +				if state.State == ipn.Running {
 +					st := b.backend.Status()
 +					peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
@@ -32,12 +32,15 @@ index 121f93a..ba1e44b 100644
 +					}
 +					state.Status = peers
 +					a.notify(state)
++				} else {
++					state.Status = make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
++					a.notify(state)
 +				}
 +			}
  			// Notify if a previously online exit is not longer online (or missing).
  			if service != 0 && exitWasOnline && state.ExitStatus == ExitOffline {
  				a.pushNotify(service, "Connection Lost", "Your exit node is offline. Disable your exit node or contact your network admin for help.")
-@@ -1039,6 +1053,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1039,6 +1056,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  	}
  
  	netmap := state.backend.NetworkMap
@@ -45,7 +48,7 @@ index 121f93a..ba1e44b 100644
  	var (
  		peers []*tailcfg.Node
  		myID  tailcfg.UserID
-@@ -1065,15 +1080,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1065,15 +1083,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  		}
  		users[p.User] = struct{}{}
  		uiPeers = append(uiPeers, UIPeer{
@@ -66,7 +69,7 @@ index 121f93a..ba1e44b 100644
  	sort.Slice(uiPeers, func(i, j int) bool {
  		lhs, rhs := uiPeers[i], uiPeers[j]
 diff --git a/cmd/tailscale/ui.go b/cmd/tailscale/ui.go
-index e6d3560..5d7802f 100644
+index e6d3560..375736b 100644
 --- a/cmd/tailscale/ui.go
 +++ b/cmd/tailscale/ui.go
 @@ -30,6 +30,7 @@ import (
@@ -91,35 +94,49 @@ index e6d3560..5d7802f 100644
  					return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
  						name := p.Peer.DisplayName(p.Peer.User == user)
 -						return material.H6(ui.theme, name).Layout(gtx)
-+						var color color.NRGBA
-+						if p.Status == nil || p.Status.Online {
-+							color = rgb(0x8f8f8f)
-+						}
 +						label := material.H6(ui.theme, name)
-+						label.Color = color
++						if p.Status == nil {
++							label.Color = rgb(0x434343)
++						} else if !p.Status.Online {
++							label.Color = rgb(0x8f8f8f)
++						}
 +						return label.Layout(gtx)
  					})
  				}),
  				layout.Rigid(func(gtx C) D {
-@@ -1422,8 +1431,17 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
+@@ -1422,9 +1431,29 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
  							bestIP = ip
  						}
  					}
 -					l := material.Body2(ui.theme, bestIP.String())
-+					bodystr := bestIP.String()
+-					l.Color = rgb(0x434343)
+-					return l.Layout(gtx)
++					bodystr := ""
 +					if p.Status != nil && p.Status.Online {
 +						if p.Status.Relay != "" && p.Status.CurAddr == "" {
-+							bodystr += " R " + p.Status.Relay
++							bodystr += "R " + p.Status.Relay
 +						} else if p.Status.CurAddr != "" {
-+							bodystr += " D " + p.Status.CurAddr
++							bodystr += "D " + p.Status.CurAddr
 +						}
 +					}
-+					l := material.Body2(ui.theme, bodystr)
- 					l.Color = rgb(0x434343)
-+					l.Font.Typeface = "Roboto Mono"
- 					return l.Layout(gtx)
++					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
++						layout.Rigid(func(gtx C) D {
++							l := material.Body2(ui.theme, bestIP.String())
++							l.Color = rgb(0x434343)
++							l.Font.Variant = "Mono"
++							return l.Layout(gtx)
++						}),
++						layout.Rigid(func(gtx C) D {
++							l := material.Body2(ui.theme, bodystr)
++							l.Color = rgb(0x434343)
++							l.Font.Variant = "Mono"
++							l.Alignment = text.End
++							return l.Layout(gtx)
++						}),
++					)
  				}),
  			)
+ 		})
 diff --git a/go.mod b/go.mod
 index c8bd15d..8e47873 100644
 --- a/go.mod
