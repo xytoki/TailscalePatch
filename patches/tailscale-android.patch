@@ -1,5 +1,5 @@
 diff --git a/cmd/tailscale/main.go b/cmd/tailscale/main.go
-index 121f93a..4b1e25f 100644
+index 121f93a..f508bcf 100644
 --- a/cmd/tailscale/main.go
 +++ b/cmd/tailscale/main.go
 @@ -38,6 +38,7 @@ import (
@@ -10,28 +10,35 @@ index 121f93a..4b1e25f 100644
  	"tailscale.com/net/dns"
  	"tailscale.com/net/interfaces"
  	"tailscale.com/net/netns"
-@@ -151,6 +152,8 @@ type BackendState struct {
+@@ -151,6 +152,9 @@ type BackendState struct {
  	ExitStatus ExitStatus
  	// Exit is our current exit node, if any.
  	Exit Peer
 +
-+	Status map[tailcfg.StableNodeID]*ipnstate.PeerStatus
++	Status         map[tailcfg.StableNodeID]*ipnstate.PeerStatus
++	StatusFetching bool
  }
  
  // UIEvent is an event flowing from the UI to the backend.
-@@ -402,6 +405,20 @@ func (a *App) runBackend() error {
+@@ -402,6 +406,26 @@ func (a *App) runBackend() error {
  					alarm(a.notifyExpiry(service, m.Expiry))
  				}
  			}
 +			if n.Engine != nil || n.NetMap != nil || n.State != nil {
 +				if state.State == ipn.Running {
-+					st := b.backend.Status()
-+					peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
-+					for _, p := range st.Peer {
-+						peers[p.ID] = p
++					if !state.StatusFetching {
++						go func() {
++							state.StatusFetching = true
++							st := b.backend.Status()
++							peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
++							for _, p := range st.Peer {
++								peers[p.ID] = p
++							}
++							state.Status = peers
++							a.notify(state)
++							state.StatusFetching = false
++						}()
 +					}
-+					state.Status = peers
-+					a.notify(state)
 +				} else {
 +					state.Status = make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
 +					a.notify(state)
@@ -40,7 +47,7 @@ index 121f93a..4b1e25f 100644
  			// Notify if a previously online exit is not longer online (or missing).
  			if service != 0 && exitWasOnline && state.ExitStatus == ExitOffline {
  				a.pushNotify(service, "Connection Lost", "Your exit node is offline. Disable your exit node or contact your network admin for help.")
-@@ -900,6 +917,9 @@ func (a *App) runUI() error {
+@@ -900,6 +924,9 @@ func (a *App) runUI() error {
  			ui.enabled.Value = p.WantRunning
  			ui.runningExit = p.AdvertisesExitNode()
  			ui.exitLAN.Value = p.ExitNodeAllowLANAccess
@@ -50,7 +57,7 @@ index 121f93a..4b1e25f 100644
  			w.Invalidate()
  		case url := <-a.browseURLs:
  			ui.signinType = noSignin
-@@ -1039,6 +1059,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1039,6 +1066,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  	}
  
  	netmap := state.backend.NetworkMap
@@ -58,7 +65,7 @@ index 121f93a..4b1e25f 100644
  	var (
  		peers []*tailcfg.Node
  		myID  tailcfg.UserID
-@@ -1065,15 +1086,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1065,15 +1093,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  		}
  		users[p.User] = struct{}{}
  		uiPeers = append(uiPeers, UIPeer{
