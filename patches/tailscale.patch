@@ -113,10 +113,40 @@ index 34259b69..788df2bf 100644
  
  // TailscaleULARange returns the IPv6 Unique Local Address range that
 diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
-index 95d0ef5e..d427beab 100644
+index 95d0ef5e..be2dfac0 100644
 --- a/wgengine/magicsock/magicsock.go
 +++ b/wgengine/magicsock/magicsock.go
-@@ -2428,6 +2428,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
+@@ -1100,6 +1100,29 @@ func (c *Conn) startDerpHomeConnectLocked() {
+ 	c.goDerpConnect(c.myDerp)
+ }
+ 
++func (c *Conn) prepareFallbackDERP(ep *endpoint) {
++	if len(ep.endpointState) <= 2 {
++		// derp connected, so the only endpoint is derp
++		onlyderp := true
++		for addr := range ep.endpointState {
++			if addr.Addr() != derpMagicIPAddr {
++				onlyderp = false
++				break
++			}
++		}
++		if onlyderp {
++			derpid := int(ep.derpAddr.Port())
++			active, ok := c.activeDerp[derpid]
++			if !ok {
++				c.goDerpConnect(derpid)
++				c.logf("magicsock: prepare fallback derp to %v at %v", ep.discoShort, derpid)
++			} else {
++				*active.lastWrite = time.Now()
++			}
++		}
++	}
++}
++
+ // goDerpConnect starts a goroutine to start connecting to the given
+ // DERP node.
+ //
+@@ -2428,6 +2451,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
  		return
  	}
  
@@ -143,7 +173,24 @@ index 95d0ef5e..d427beab 100644
  	eps := make([]netip.AddrPort, 0, len(c.lastEndpoints))
  	for _, ep := range c.lastEndpoints {
  		eps = append(eps, ep.Addr)
-@@ -4865,6 +4885,34 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+@@ -2715,6 +2758,7 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
+ 			}
+ 			oldDiscoKey := ep.discoKey
+ 			ep.updateFromNode(n, heartbeatDisabled)
++			c.prepareFallbackDERP(ep)
+ 			c.peerMap.upsertEndpoint(ep, oldDiscoKey) // maybe update discokey mappings in peerMap
+ 			continue
+ 		}
+@@ -4116,7 +4160,7 @@ type pendingCLIPing struct {
+ 
+ 	// derpInactiveCleanupTime is how long a non-home DERP connection
+ 	// needs to be idle (last written to) before we close it.
+-	derpInactiveCleanupTime = 60 * time.Second
++	derpInactiveCleanupTime = 180 * time.Second
+ 
+ 	// derpCleanStaleInterval is how often cleanStaleDerp runs when there
+ 	// are potentially-stale DERP connections to close.
+@@ -4865,6 +4909,34 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
  		// Nothing to do on js/wasm if we can't send UDP packets anyway.
  		return
  	}
@@ -178,7 +225,7 @@ index 95d0ef5e..d427beab 100644
  	de.mu.Lock()
  	defer de.mu.Unlock()
  
-@@ -4872,6 +4920,10 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+@@ -4872,6 +4944,10 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
  	for ep := range de.isCallMeMaybeEP {
  		de.isCallMeMaybeEP[ep] = false // mark for deletion
  	}
@@ -189,7 +236,7 @@ index 95d0ef5e..d427beab 100644
  	var newEPs []netip.AddrPort
  	for _, ep := range m.MyNumber {
  		if ep.Addr().Is6() && ep.Addr().IsLinkLocalUnicast() {
-@@ -4889,6 +4941,11 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+@@ -4889,6 +4965,11 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
  		}
  	}
  	if len(newEPs) > 0 {
