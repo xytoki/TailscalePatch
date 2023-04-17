@@ -112,6 +112,95 @@ index 34259b69..788df2bf 100644
  }
  
  // TailscaleULARange returns the IPv6 Unique Local Address range that
+diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
+index 95d0ef5e..d427beab 100644
+--- a/wgengine/magicsock/magicsock.go
++++ b/wgengine/magicsock/magicsock.go
+@@ -2428,6 +2428,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
+ 		return
+ 	}
+ 
++	// Ignore endpoints from isolated peers.
++	if len(de.endpointState) == 0 {
++		// derp not initialized yet, so	no endpoints
++		return
++	}
++
++	if len(de.endpointState) <= 2 {
++		// derp connected, so the only endpoint is derp
++		onlyderp := true
++		for addr := range de.endpointState {
++			if addr.Addr() != derpMagicIPAddr {
++				onlyderp = false
++				break
++			}
++		}
++		if onlyderp {
++			return
++		}
++	}
++
+ 	eps := make([]netip.AddrPort, 0, len(c.lastEndpoints))
+ 	for _, ep := range c.lastEndpoints {
+ 		eps = append(eps, ep.Addr)
+@@ -4865,6 +4885,34 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+ 		// Nothing to do on js/wasm if we can't send UDP packets anyway.
+ 		return
+ 	}
++	// Ignore endpoints from isolated peers.
++	if len(de.endpointState) == 0 {
++		// derp not initialized yet, so	no endpoints
++		de.debugUpdates.Add(EndpointChange{
++			When: time.Now(),
++			What: "handleCallMeMaybe-isolated-0-ep",
++			To:   m.MyNumber,
++		})
++		return
++	}
++	if len(de.endpointState) <= 2 {
++		// derp connected, so the only endpoint is derp
++		onlyderp := true
++		for addr := range de.endpointState {
++			if addr.Addr() != derpMagicIPAddr {
++				onlyderp = false
++				break
++			}
++		}
++		if onlyderp {
++			de.debugUpdates.Add(EndpointChange{
++				When: time.Now(),
++				What: "handleCallMeMaybe-isolated-derp-only",
++				To:   m.MyNumber,
++			})
++			return
++		}
++	}
+ 	de.mu.Lock()
+ 	defer de.mu.Unlock()
+ 
+@@ -4872,6 +4920,10 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+ 	for ep := range de.isCallMeMaybeEP {
+ 		de.isCallMeMaybeEP[ep] = false // mark for deletion
+ 	}
++	var currentEPs []netip.AddrPort
++	for ep := range de.endpointState {
++		currentEPs = append(currentEPs, ep)
++	}
+ 	var newEPs []netip.AddrPort
+ 	for _, ep := range m.MyNumber {
+ 		if ep.Addr().Is6() && ep.Addr().IsLinkLocalUnicast() {
+@@ -4889,6 +4941,11 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+ 		}
+ 	}
+ 	if len(newEPs) > 0 {
++		de.debugUpdates.Add(EndpointChange{
++			When: time.Now(),
++			What: "handleCallMeMaybe-old-endpoints",
++			To:   currentEPs,
++		})
+ 		de.debugUpdates.Add(EndpointChange{
+ 			When: time.Now(),
+ 			What: "handleCallMeMaybe-new-endpoints",
 diff --git a/wgengine/wgcfg/nmcfg/nmcfg.go b/wgengine/wgcfg/nmcfg/nmcfg.go
 index d07f7232..e16671aa 100644
 --- a/wgengine/wgcfg/nmcfg/nmcfg.go
