@@ -1,5 +1,5 @@
 diff --git a/go.mod b/go.mod
-index 19136dcf..4cc4f294 100644
+index d0dfe03c..adcaf248 100644
 --- a/go.mod
 +++ b/go.mod
 @@ -2,6 +2,8 @@ module tailscale.com
@@ -12,10 +12,10 @@ index 19136dcf..4cc4f294 100644
  	filippo.io/mkcert v1.4.3
  	github.com/Microsoft/go-winio v0.6.0
 diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
-index d53eb7ee..fff25dae 100644
+index 687aa6a8..5ff33843 100644
 --- a/net/netcheck/netcheck.go
 +++ b/net/netcheck/netcheck.go
-@@ -1106,7 +1106,7 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+@@ -1118,7 +1118,7 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
  		(preferredDERP != 0 && len(dm.Regions[preferredDERP].Nodes) == 0) {
  		rids := make([]int, 0, len(dm.Regions))
  		for id, reg := range dm.Regions {
@@ -24,7 +24,7 @@ index d53eb7ee..fff25dae 100644
  				continue
  			}
  			rids = append(rids, id)
-@@ -1125,8 +1125,11 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+@@ -1137,8 +1137,11 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
  		// TODO(bradfitz,andrew-d): how to actually handle this nicely?
  		return false, nil
  	}
@@ -38,7 +38,7 @@ index d53eb7ee..fff25dae 100644
  	if err != nil {
  		return false, err
  	}
-@@ -1177,7 +1180,11 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
+@@ -1189,7 +1192,11 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
  		go func() {
  			defer wg.Done()
  			node := rg.Nodes[0]
@@ -51,7 +51,7 @@ index d53eb7ee..fff25dae 100644
  			// One warm-up one to get HTTP connection set
  			// up and get a connection from the browser's
  			// pool.
-@@ -1248,8 +1255,11 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
+@@ -1260,8 +1267,11 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
  		},
  	}
  	hc := &http.Client{Transport: tr}
@@ -65,7 +65,7 @@ index d53eb7ee..fff25dae 100644
  	if err != nil {
  		return 0, ip, err
  	}
-@@ -1448,6 +1458,11 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report) {
+@@ -1460,6 +1470,11 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report) {
  	var bestAny time.Duration
  	var oldRegionCurLatency time.Duration
  	for regionID, d := range r.RegionLatency {
@@ -113,10 +113,10 @@ index 34259b69..788df2bf 100644
  
  // TailscaleULARange returns the IPv6 Unique Local Address range that
 diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
-index 95d0ef5e..be2dfac0 100644
+index 8374193d..d0c651d8 100644
 --- a/wgengine/magicsock/magicsock.go
 +++ b/wgengine/magicsock/magicsock.go
-@@ -1100,6 +1100,29 @@ func (c *Conn) startDerpHomeConnectLocked() {
+@@ -1110,6 +1110,29 @@ func (c *Conn) startDerpHomeConnectLocked() {
  	c.goDerpConnect(c.myDerp)
  }
  
@@ -146,7 +146,7 @@ index 95d0ef5e..be2dfac0 100644
  // goDerpConnect starts a goroutine to start connecting to the given
  // DERP node.
  //
-@@ -2428,6 +2451,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
+@@ -2432,6 +2455,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
  		return
  	}
  
@@ -173,15 +173,15 @@ index 95d0ef5e..be2dfac0 100644
  	eps := make([]netip.AddrPort, 0, len(c.lastEndpoints))
  	for _, ep := range c.lastEndpoints {
  		eps = append(eps, ep.Addr)
-@@ -2715,6 +2758,7 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
+@@ -2728,6 +2771,7 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
+ 				oldDiscoKey = epDisco.key
  			}
- 			oldDiscoKey := ep.discoKey
  			ep.updateFromNode(n, heartbeatDisabled)
 +			c.prepareFallbackDERP(ep)
  			c.peerMap.upsertEndpoint(ep, oldDiscoKey) // maybe update discokey mappings in peerMap
  			continue
  		}
-@@ -4116,7 +4160,7 @@ type pendingCLIPing struct {
+@@ -4138,7 +4182,7 @@ type pendingCLIPing struct {
  
  	// derpInactiveCleanupTime is how long a non-home DERP connection
  	// needs to be idle (last written to) before we close it.
@@ -190,7 +190,7 @@ index 95d0ef5e..be2dfac0 100644
  
  	// derpCleanStaleInterval is how often cleanStaleDerp runs when there
  	// are potentially-stale DERP connections to close.
-@@ -4865,6 +4909,34 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+@@ -4922,6 +4966,34 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
  		// Nothing to do on js/wasm if we can't send UDP packets anyway.
  		return
  	}
@@ -225,7 +225,7 @@ index 95d0ef5e..be2dfac0 100644
  	de.mu.Lock()
  	defer de.mu.Unlock()
  
-@@ -4872,6 +4944,10 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+@@ -4929,6 +5001,10 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
  	for ep := range de.isCallMeMaybeEP {
  		de.isCallMeMaybeEP[ep] = false // mark for deletion
  	}
@@ -236,7 +236,7 @@ index 95d0ef5e..be2dfac0 100644
  	var newEPs []netip.AddrPort
  	for _, ep := range m.MyNumber {
  		if ep.Addr().Is6() && ep.Addr().IsLinkLocalUnicast() {
-@@ -4889,6 +4965,11 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
+@@ -4946,6 +5022,11 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
  		}
  	}
  	if len(newEPs) > 0 {
@@ -249,7 +249,7 @@ index 95d0ef5e..be2dfac0 100644
  			When: time.Now(),
  			What: "handleCallMeMaybe-new-endpoints",
 diff --git a/wgengine/wgcfg/nmcfg/nmcfg.go b/wgengine/wgcfg/nmcfg/nmcfg.go
-index d07f7232..e16671aa 100644
+index f01b42cb..8ae03de1 100644
 --- a/wgengine/wgcfg/nmcfg/nmcfg.go
 +++ b/wgengine/wgcfg/nmcfg/nmcfg.go
 @@ -102,6 +102,17 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
