@@ -9,8 +9,8 @@ index d0dfe03c..adcaf248 100644
 +replace github.com/tailscale/wireguard-go => ../wireguard-go
 +
  require (
- 	filippo.io/mkcert v1.4.3
- 	github.com/Microsoft/go-winio v0.6.0
+ 	filippo.io/mkcert v1.4.4
+ 	github.com/Microsoft/go-winio v0.6.1
 diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
 index 687aa6a8..5ff33843 100644
 --- a/net/netcheck/netcheck.go
