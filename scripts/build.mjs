@@ -16,7 +16,8 @@ if (process.argv.includes('--windows')) {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
     };
-    await $`./tool/go run ./cmd/dist build linux/amd64/*`;
+    const target = process.env.includes('--arm64') ? 'arm64' : 'amd64';
+    await $`./tool/go run ./cmd/dist build linux/${target}/*`;
     cd('..');
     const distpkgs = await glob('tailscale/dist/*.*');
     for (const pkg of distpkgs) {

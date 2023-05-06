@@ -8,7 +8,7 @@ jobs:
     name: Build
     strategy:
       matrix:
-        platform: [windows, android, linux]
+        platform: [windows, android, linux, linux-arm64]
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
@@ -45,8 +45,11 @@ jobs:
       - name: Build Linux x86_64
         if: matrix.platform == 'linux'
         run: pnpm build -- --linux
+      - name: Build Linux arm64
+        if: matrix.platform == 'linux-arm64'
+        run: pnpm build -- --linux --arm64
       - name: Linux artifact
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' || matrix.platform == 'linux-arm64'
         uses: initdc/upload-artifact@feat/artifact-per-file
         with:
           path: dist/*.*
