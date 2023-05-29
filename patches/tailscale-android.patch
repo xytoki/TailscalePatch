@@ -1,5 +1,5 @@
 diff --git a/cmd/tailscale/main.go b/cmd/tailscale/main.go
-index 121f93a..77e45ca 100644
+index 7599509..63456ad 100644
 --- a/cmd/tailscale/main.go
 +++ b/cmd/tailscale/main.go
 @@ -38,6 +38,7 @@ import (
@@ -20,7 +20,7 @@ index 121f93a..77e45ca 100644
  }
  
  // UIEvent is an event flowing from the UI to the backend.
-@@ -194,6 +198,7 @@ type (
+@@ -194,12 +198,14 @@ type (
  	WebAuthEvent                   struct{}
  	GoogleAuthEvent                struct{}
  	LogoutEvent                    struct{}
@@ -28,7 +28,14 @@ index 121f93a..77e45ca 100644
  	OSSLicensesEvent               struct{}
  	BeExitNodeEvent                bool
  	ExitAllowLANEvent              bool
-@@ -402,6 +407,26 @@ func (a *App) runBackend() error {
+ 	AllowIncomingTransactionsEvent bool
+ 	UseTailscaleDNSEvent           bool
+ 	UseTailscaleSubnetsEvent       bool
++	UseTailscaleLocalSubnetsEvent  bool
+ )
+ 
+ // serverOAuthID is the OAuth ID of the tailscale-android server, used
+@@ -402,6 +408,26 @@ func (a *App) runBackend() error {
  					alarm(a.notifyExpiry(service, m.Expiry))
  				}
  			}
@@ -55,7 +62,7 @@ index 121f93a..77e45ca 100644
  			// Notify if a previously online exit is not longer online (or missing).
  			if service != 0 && exitWasOnline && state.ExitStatus == ExitOffline {
  				a.pushNotify(service, "Connection Lost", "Your exit node is offline. Disable your exit node or contact your network admin for help.")
-@@ -437,6 +462,18 @@ func (a *App) runBackend() error {
+@@ -437,9 +463,24 @@ func (a *App) runBackend() error {
  			case ExitAllowLANEvent:
  				state.Prefs.ExitNodeAllowLANAccess = bool(e)
  				go b.backend.SetPrefs(state.Prefs)
@@ -74,17 +81,24 @@ index 121f93a..77e45ca 100644
  			case UseTailscaleDNSEvent:
  				state.Prefs.CorpDNS = bool(e)
  				go b.backend.SetPrefs(state.Prefs)
-@@ -900,6 +937,9 @@ func (a *App) runUI() error {
++			case UseTailscaleLocalSubnetsEvent:
++				state.Prefs.RouteLocal = bool(e)
++				go b.backend.SetPrefs(state.Prefs)
+ 			case UseTailscaleSubnetsEvent:
+ 				state.Prefs.RouteAll = !bool(e)
+ 				go b.backend.SetPrefs(state.Prefs)
+@@ -909,6 +950,10 @@ func (a *App) runUI() error {
  			ui.enabled.Value = p.WantRunning
  			ui.runningExit = p.AdvertisesExitNode()
  			ui.exitLAN.Value = p.ExitNodeAllowLANAccess
 +			ui.useTailscaleDNS.Value = p.CorpDNS
 +			ui.useTailscaleSubnets.Value = p.RouteAll
++			ui.useTailscaleLocalSubnets.Value = p.RouteLocal
 +			ui.allowIncomingTransactions.Value = p.ShieldsUp
  			w.Invalidate()
  		case url := <-a.browseURLs:
  			ui.signinType = noSignin
-@@ -1039,6 +1079,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1048,6 +1093,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  	}
  
  	netmap := state.backend.NetworkMap
@@ -92,7 +106,7 @@ index 121f93a..77e45ca 100644
  	var (
  		peers []*tailcfg.Node
  		myID  tailcfg.UserID
-@@ -1065,15 +1106,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
+@@ -1074,15 +1120,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
  		}
  		users[p.User] = struct{}{}
  		uiPeers = append(uiPeers, UIPeer{
@@ -112,7 +126,16 @@ index 121f93a..77e45ca 100644
  	}
  	sort.Slice(uiPeers, func(i, j int) bool {
  		lhs, rhs := uiPeers[i], uiPeers[j]
-@@ -1148,6 +1190,8 @@ func (a *App) processUIEvents(w *app.Window, events []UIEvent, act jni.Object, s
+@@ -1146,6 +1193,8 @@ func (a *App) processUIEvents(w *app.Window, events []UIEvent, act jni.Object, s
+ 			requestBackend(e)
+ 		case UseTailscaleDNSEvent:
+ 			requestBackend(e)
++		case UseTailscaleLocalSubnetsEvent:
++			requestBackend(e)
+ 		case UseTailscaleSubnetsEvent:
+ 			requestBackend(e)
+ 		case WebAuthEvent:
+@@ -1157,6 +1206,8 @@ func (a *App) processUIEvents(w *app.Window, events []UIEvent, act jni.Object, s
  		case LogoutEvent:
  			a.signOut()
  			requestBackend(e)
@@ -122,7 +145,7 @@ index 121f93a..77e45ca 100644
  			requestBackend(e)
  		case RouteAllEvent:
 diff --git a/cmd/tailscale/ui.go b/cmd/tailscale/ui.go
-index e6d3560..ee37412 100644
+index e6d3560..16f8d4a 100644
 --- a/cmd/tailscale/ui.go
 +++ b/cmd/tailscale/ui.go
 @@ -30,6 +30,7 @@ import (
@@ -133,7 +156,15 @@ index e6d3560..ee37412 100644
  	"tailscale.com/tailcfg"
  	"tailscale.com/version"
  
-@@ -117,6 +118,7 @@ type UI struct {
+@@ -56,6 +57,7 @@ type UI struct {
+ 	allowIncomingTransactions widget.Bool
+ 	useTailscaleDNS           widget.Bool
+ 	useTailscaleSubnets       widget.Bool
++	useTailscaleLocalSubnets  widget.Bool
+ 
+ 	// webSigin is the button for the web-based sign-in flow.
+ 	webSignin widget.Clickable
+@@ -117,6 +119,7 @@ type UI struct {
  
  		useLoginServer widget.Clickable
  		copy           widget.Clickable
@@ -141,7 +172,7 @@ index e6d3560..ee37412 100644
  		preferences    widget.Clickable
  		reauth         widget.Clickable
  		bug            widget.Clickable
-@@ -182,6 +184,8 @@ type UIPeer struct {
+@@ -182,6 +185,8 @@ type UIPeer struct {
  	Name string
  	// Peer is nil for section headers.
  	Peer *tailcfg.Node
@@ -150,7 +181,17 @@ index e6d3560..ee37412 100644
  }
  
  // menuItem describes an item in a popup menu.
-@@ -483,6 +487,10 @@ func (ui *UI) layout(gtx layout.Context, sysIns system.Insets, state *clientStat
+@@ -409,6 +414,9 @@ func (ui *UI) layout(gtx layout.Context, sysIns system.Insets, state *clientStat
+ 	if ui.useTailscaleDNS.Changed() {
+ 		events = append(events, UseTailscaleDNSEvent(ui.useTailscaleDNS.Value))
+ 	}
++	if ui.useTailscaleLocalSubnets.Changed() {
++		events = append(events, UseTailscaleLocalSubnetsEvent(ui.useTailscaleLocalSubnets.Value))
++	}
+ 	if ui.useTailscaleSubnets.Changed() {
+ 		events = append(events, UseTailscaleSubnetsEvent(ui.useTailscaleSubnets.Value))
+ 	}
+@@ -483,6 +491,10 @@ func (ui *UI) layout(gtx layout.Context, sysIns system.Insets, state *clientStat
  		events = append(events, LogoutEvent{})
  	}
  
@@ -161,7 +202,22 @@ index e6d3560..ee37412 100644
  	for i := range ui.shareDialog.targets {
  		t := &ui.shareDialog.targets[i]
  		select {
-@@ -1316,6 +1324,7 @@ func (ui *UI) layoutMenu(gtx layout.Context, sysIns system.Insets, expiry time.T
+@@ -1172,6 +1184,14 @@ func (ui *UI) layoutPreferencesDialog(gtx layout.Context, sysIns system.Insets,
+ 							Bottom: unit.Dp(16),
+ 						}.Layout(gtx, btn.Layout)
+ 					}),
++					layout.Rigid(func(gtx C) D {
++						btn := material.CheckBox(ui.theme, &ui.useTailscaleLocalSubnets, "Override Local Subnets")
++						return layout.Inset{
++							Right:  unit.Dp(16),
++							Left:   unit.Dp(16),
++							Bottom: unit.Dp(16),
++						}.Layout(gtx, btn.Layout)
++					}),
+ 				)
+ 			})
+ 		})
+@@ -1316,6 +1336,7 @@ func (ui *UI) layoutMenu(gtx layout.Context, sysIns system.Insets, expiry time.T
  			items := []menuItem{
  				{title: "Copy my IP address", btn: &menu.copy},
  			}
@@ -169,7 +225,7 @@ index e6d3560..ee37412 100644
  			if showExits {
  				items = append(items, menuItem{title: "Use exit node...", btn: &menu.exits})
  			}
-@@ -1412,7 +1421,13 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
+@@ -1412,7 +1433,13 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
  				layout.Rigid(func(gtx C) D {
  					return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
  						name := p.Peer.DisplayName(p.Peer.User == user)
@@ -184,7 +240,7 @@ index e6d3560..ee37412 100644
  					})
  				}),
  				layout.Rigid(func(gtx C) D {
-@@ -1422,9 +1437,29 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
+@@ -1422,9 +1449,29 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
  							bestIP = ip
  						}
  					}
@@ -218,15 +274,15 @@ index e6d3560..ee37412 100644
  			)
  		})
 diff --git a/go.mod b/go.mod
-index c8bd15d..8e47873 100644
+index 575377e..1436033 100644
 --- a/go.mod
 +++ b/go.mod
 @@ -2,6 +2,10 @@ module github.com/tailscale/tailscale-android
  
  go 1.20
  
-+
 +replace github.com/tailscale/wireguard-go => ../wireguard-go
++
 +replace tailscale.com => ../tailscale
 +
  require (
