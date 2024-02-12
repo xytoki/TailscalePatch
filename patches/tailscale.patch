@@ -1,8 +1,8 @@
 diff --git a/cmd/tailscale/cli/set.go b/cmd/tailscale/cli/set.go
-index 5ed2fe28..35369271 100644
+index 02d4f5a06..95b5c0621 100644
 --- a/cmd/tailscale/cli/set.go
 +++ b/cmd/tailscale/cli/set.go
-@@ -32,6 +32,7 @@
+@@ -39,6 +39,7 @@
  
  type setArgsT struct {
  	acceptRoutes           bool
@@ -10,7 +10,7 @@ index 5ed2fe28..35369271 100644
  	acceptDNS              bool
  	exitNodeIP             string
  	exitNodeAllowLANAccess bool
-@@ -51,6 +52,7 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
+@@ -63,6 +64,7 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
  
  	setf.StringVar(&setArgs.profileName, "nickname", "", "nickname for the current account")
  	setf.BoolVar(&setArgs.acceptRoutes, "accept-routes", false, "accept routes advertised by other Tailscale nodes")
@@ -18,7 +18,7 @@ index 5ed2fe28..35369271 100644
  	setf.BoolVar(&setArgs.acceptDNS, "accept-dns", false, "accept DNS configuration from the admin panel")
  	setf.StringVar(&setArgs.exitNodeIP, "exit-node", "", "Tailscale exit node (IP or base name) for internet traffic, or empty string to not use an exit node")
  	setf.BoolVar(&setArgs.exitNodeAllowLANAccess, "exit-node-allow-lan-access", false, "Allow direct access to the local network when routing traffic via an exit node")
-@@ -90,6 +92,7 @@ func runSet(ctx context.Context, args []string) (retErr error) {
+@@ -108,6 +110,7 @@ func runSet(ctx context.Context, args []string) (retErr error) {
  		Prefs: ipn.Prefs{
  			ProfileName:            setArgs.profileName,
  			RouteAll:               setArgs.acceptRoutes,
@@ -27,10 +27,10 @@ index 5ed2fe28..35369271 100644
  			ExitNodeAllowLANAccess: setArgs.exitNodeAllowLANAccess,
  			ShieldsUp:              setArgs.shieldsUp,
 diff --git a/cmd/tailscale/cli/up.go b/cmd/tailscale/cli/up.go
-index 06d9b5ff..33e29f3c 100644
+index 3aa66865f..3a3f1e31a 100644
 --- a/cmd/tailscale/cli/up.go
 +++ b/cmd/tailscale/cli/up.go
-@@ -106,6 +106,7 @@ func newUpFlagSet(goos string, upArgs *upArgsT, cmd string) *flag.FlagSet {
+@@ -104,6 +104,7 @@ func newUpFlagSet(goos string, upArgs *upArgsT, cmd string) *flag.FlagSet {
  
  	upf.StringVar(&upArgs.server, "login-server", ipn.DefaultControlURL, "base URL of control server")
  	upf.BoolVar(&upArgs.acceptRoutes, "accept-routes", acceptRouteDefault(goos), "accept routes advertised by other Tailscale nodes")
@@ -46,7 +46,7 @@ index 06d9b5ff..33e29f3c 100644
  	acceptDNS              bool
  	singleRoutes           bool
  	exitNodeIP             string
-@@ -334,6 +336,7 @@ func prefsFromUpArgs(upArgs upArgsT, warnf logger.Logf, st *ipnstate.Status, goo
+@@ -260,6 +262,7 @@ func prefsFromUpArgs(upArgs upArgsT, warnf logger.Logf, st *ipnstate.Status, goo
  	prefs.ControlURL = upArgs.server
  	prefs.WantRunning = true
  	prefs.RouteAll = upArgs.acceptRoutes
@@ -54,7 +54,7 @@ index 06d9b5ff..33e29f3c 100644
  	if distro.Get() == distro.Synology {
  		// ipn.NewPrefs returns a non-zero Netfilter default. But Synology only
  		// supports "off" mode.
-@@ -779,6 +782,7 @@ func init() {
+@@ -705,6 +708,7 @@ func init() {
  	// The rest are 1:1:
  	addPrefFlagMapping("accept-dns", "CorpDNS")
  	addPrefFlagMapping("accept-routes", "RouteAll")
@@ -62,7 +62,7 @@ index 06d9b5ff..33e29f3c 100644
  	addPrefFlagMapping("advertise-tags", "AdvertiseTags")
  	addPrefFlagMapping("host-routes", "AllowSingleHosts")
  	addPrefFlagMapping("hostname", "Hostname")
-@@ -998,6 +1002,8 @@ func prefsToFlags(env upCheckEnv, prefs *ipn.Prefs) (flagVal map[string]any) {
+@@ -940,6 +944,8 @@ func prefsToFlags(env upCheckEnv, prefs *ipn.Prefs) (flagVal map[string]any) {
  			set(prefs.ControlURL)
  		case "accept-routes":
  			set(prefs.RouteAll)
@@ -72,23 +72,23 @@ index 06d9b5ff..33e29f3c 100644
  			set(prefs.AllowSingleHosts)
  		case "accept-dns":
 diff --git a/go.mod b/go.mod
-index 7ea5a142..6cf4a392 100644
+index 25dabfc38..55c897375 100644
 --- a/go.mod
 +++ b/go.mod
 @@ -2,6 +2,8 @@ module tailscale.com
  
- go 1.20
+ go 1.22.0
  
 +replace github.com/tailscale/wireguard-go => ../wireguard-go
 +
  require (
  	filippo.io/mkcert v1.4.4
- 	github.com/Microsoft/go-winio v0.6.1
+ 	github.com/akutz/memconn v0.1.0
 diff --git a/ipn/ipn_clone.go b/ipn/ipn_clone.go
-index 9dfd9f0c..c718d79d 100644
+index 40cc44296..a451a73ee 100644
 --- a/ipn/ipn_clone.go
 +++ b/ipn/ipn_clone.go
-@@ -31,6 +31,7 @@ func (src *Prefs) Clone() *Prefs {
+@@ -32,6 +32,7 @@ func (src *Prefs) Clone() *Prefs {
  var _PrefsCloneNeedsRegeneration = Prefs(struct {
  	ControlURL             string
  	RouteAll               bool
@@ -97,7 +97,7 @@ index 9dfd9f0c..c718d79d 100644
  	ExitNodeID             tailcfg.StableNodeID
  	ExitNodeIP             netip.Addr
 diff --git a/ipn/ipn_view.go b/ipn/ipn_view.go
-index 94da4eb3..8fd40978 100644
+index 18436867d..b927c0563 100644
 --- a/ipn/ipn_view.go
 +++ b/ipn/ipn_view.go
 @@ -65,6 +65,7 @@ func (v *PrefsView) UnmarshalJSON(b []byte) error {
@@ -108,7 +108,7 @@ index 94da4eb3..8fd40978 100644
  func (v PrefsView) AllowSingleHosts() bool             { return v.ж.AllowSingleHosts }
  func (v PrefsView) ExitNodeID() tailcfg.StableNodeID   { return v.ж.ExitNodeID }
  func (v PrefsView) ExitNodeIP() netip.Addr             { return v.ж.ExitNodeIP }
-@@ -92,6 +93,7 @@ func (v PrefsView) Persist() persist.PersistView          { return v.ж.Persist.
+@@ -97,6 +98,7 @@ func (v PrefsView) Persist() persist.PersistView          { return v.ж.Persist.
  var _PrefsViewNeedsRegeneration = Prefs(struct {
  	ControlURL             string
  	RouteAll               bool
@@ -117,10 +117,10 @@ index 94da4eb3..8fd40978 100644
  	ExitNodeID             tailcfg.StableNodeID
  	ExitNodeIP             netip.Addr
 diff --git a/ipn/ipnlocal/local.go b/ipn/ipnlocal/local.go
-index 8c8f342e..e79d9973 100644
+index 13d13718f..31779069f 100644
 --- a/ipn/ipnlocal/local.go
 +++ b/ipn/ipnlocal/local.go
-@@ -2946,6 +2946,9 @@ func (b *LocalBackend) authReconfig() {
+@@ -3538,6 +3538,9 @@ func (b *LocalBackend) authReconfig() {
  	if prefs.RouteAll() {
  		flags |= netmap.AllowSubnetRoutes
  	}
@@ -130,7 +130,7 @@ index 8c8f342e..e79d9973 100644
  	if prefs.AllowSingleHosts() {
  		flags |= netmap.AllowSingleHosts
  	}
-@@ -2979,7 +2982,7 @@ func (b *LocalBackend) authReconfig() {
+@@ -3570,7 +3573,7 @@ func (b *LocalBackend) authReconfig() {
  	if err == wgengine.ErrNoChanges {
  		return
  	}
@@ -140,10 +140,10 @@ index 8c8f342e..e79d9973 100644
  	b.initPeerAPIListener()
  }
 diff --git a/ipn/prefs.go b/ipn/prefs.go
-index e79da0d0..280506ef 100644
+index 7bfbd613f..c27a23db7 100644
 --- a/ipn/prefs.go
 +++ b/ipn/prefs.go
-@@ -68,6 +68,10 @@ type Prefs struct {
+@@ -73,6 +73,10 @@ type Prefs struct {
  	// controlled by ExitNodeID/IP below.
  	RouteAll bool
  
@@ -154,15 +154,18 @@ index e79da0d0..280506ef 100644
  	// AllowSingleHosts specifies whether to install routes for each
  	// node IP on the tailscale network, in addition to a route for
  	// the whole network.
-@@ -209,6 +213,7 @@ type MaskedPrefs struct {
- 
- 	ControlURLSet             bool `json:",omitempty"`
- 	RouteAllSet               bool `json:",omitempty"`
-+	RouteLocalSet             bool `json:",omitempty"`
- 	AllowSingleHostsSet       bool `json:",omitempty"`
- 	ExitNodeIDSet             bool `json:",omitempty"`
- 	ExitNodeIPSet             bool `json:",omitempty"`
-@@ -314,6 +319,7 @@ func (p *Prefs) pretty(goos string) string {
+@@ -266,9 +270,9 @@ type AppConnectorPrefs struct {
+ // Prefs (see AutoUpdateSet for example).
+ type MaskedPrefs struct {
+ 	Prefs
+-
+ 	ControlURLSet             bool                `json:",omitempty"`
+ 	RouteAllSet               bool                `json:",omitempty"`
++	RouteLocalSet             bool                `json:",omitempty"`
+ 	AllowSingleHostsSet       bool                `json:",omitempty"`
+ 	ExitNodeIDSet             bool                `json:",omitempty"`
+ 	ExitNodeIPSet             bool                `json:",omitempty"`
+@@ -445,6 +449,7 @@ func (p *Prefs) pretty(goos string) string {
  	var sb strings.Builder
  	sb.WriteString("Prefs{")
  	fmt.Fprintf(&sb, "ra=%v ", p.RouteAll)
@@ -170,15 +173,15 @@ index e79da0d0..280506ef 100644
  	if !p.AllowSingleHosts {
  		sb.WriteString("mesh=false ")
  	}
-@@ -395,6 +401,7 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
- 	return p != nil && p2 != nil &&
- 		p.ControlURL == p2.ControlURL &&
+@@ -533,6 +538,7 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
+ 
+ 	return p.ControlURL == p2.ControlURL &&
  		p.RouteAll == p2.RouteAll &&
 +		p.RouteLocal == p2.RouteLocal &&
  		p.AllowSingleHosts == p2.AllowSingleHosts &&
  		p.ExitNodeID == p2.ExitNodeID &&
  		p.ExitNodeIP == p2.ExitNodeIP &&
-@@ -454,6 +461,7 @@ func NewPrefs() *Prefs {
+@@ -614,6 +620,7 @@ func NewPrefs() *Prefs {
  		ControlURL: "",
  
  		RouteAll:         true,
@@ -187,10 +190,10 @@ index e79da0d0..280506ef 100644
  		CorpDNS:          true,
  		WantRunning:      false,
 diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
-index ac52a7a4..6f997924 100644
+index 862743540..9c307fa2c 100644
 --- a/net/netcheck/netcheck.go
 +++ b/net/netcheck/netcheck.go
-@@ -1142,7 +1142,7 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+@@ -1079,7 +1079,7 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
  		(preferredDERP != 0 && len(dm.Regions[preferredDERP].Nodes) == 0) {
  		rids := make([]int, 0, len(dm.Regions))
  		for id, reg := range dm.Regions {
@@ -199,7 +202,7 @@ index ac52a7a4..6f997924 100644
  				continue
  			}
  			rids = append(rids, id)
-@@ -1161,8 +1161,11 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
+@@ -1098,8 +1098,11 @@ func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, pr
  		// TODO(bradfitz,andrew-d): how to actually handle this nicely?
  		return false, nil
  	}
@@ -213,7 +216,7 @@ index ac52a7a4..6f997924 100644
  	if err != nil {
  		return false, err
  	}
-@@ -1213,7 +1216,11 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
+@@ -1150,7 +1153,11 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
  		go func() {
  			defer wg.Done()
  			node := rg.Nodes[0]
@@ -226,7 +229,7 @@ index ac52a7a4..6f997924 100644
  			// One warm-up one to get HTTP connection set
  			// up and get a connection from the browser's
  			// pool.
-@@ -1284,8 +1291,11 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
+@@ -1221,8 +1228,11 @@ func (c *Client) measureHTTPSLatency(ctx context.Context, reg *tailcfg.DERPRegio
  		},
  	}
  	hc := &http.Client{Transport: tr}
@@ -240,10 +243,10 @@ index ac52a7a4..6f997924 100644
  	if err != nil {
  		return 0, ip, err
  	}
-@@ -1481,6 +1491,11 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(r *Report) {
- 	var bestAny time.Duration
- 	var oldRegionCurLatency time.Duration
- 	for regionID, d := range r.RegionLatency {
+@@ -1455,6 +1465,11 @@ func (c *Client) addReportHistoryAndSetPreferredDERP(rs *reportState, r *Report,
+ 			d = time.Duration(float64(d) * score)
+ 		}
+ 
 +		if regionID < 0 {
 +			// STUNOnly is not readable here
 +			// so use negative region IDs to mark stun-only servers
@@ -253,10 +256,10 @@ index ac52a7a4..6f997924 100644
  			oldRegionCurLatency = d
  		}
 diff --git a/net/tsaddr/tsaddr.go b/net/tsaddr/tsaddr.go
-index 34259b69..788df2bf 100644
+index 93a720b01..9ce92bd0c 100644
 --- a/net/tsaddr/tsaddr.go
 +++ b/net/tsaddr/tsaddr.go
-@@ -24,6 +24,18 @@ func ChromeOSVMRange() netip.Prefix {
+@@ -26,6 +26,18 @@ func ChromeOSVMRange() netip.Prefix {
  
  var chromeOSRange oncePrefix
  
@@ -275,7 +278,7 @@ index 34259b69..788df2bf 100644
  // CGNATRange returns the Carrier Grade NAT address range that
  // is the superset range that Tailscale assigns out of.
  // See https://tailscale.com/s/cgnat
-@@ -69,9 +81,9 @@ func TailscaleServiceIPv6() netip.Addr {
+@@ -70,9 +82,9 @@ func TailscaleServiceIPv6() netip.Addr {
  // Tailscale assigns from.
  func IsTailscaleIP(ip netip.Addr) bool {
  	if ip.Is4() {
@@ -288,31 +291,31 @@ index 34259b69..788df2bf 100644
  
  // TailscaleULARange returns the IPv6 Unique Local Address range that
 diff --git a/types/netmap/netmap.go b/types/netmap/netmap.go
-index b3a9df8b..d412a74e 100644
+index 693701bb5..5a7b62f3c 100644
 --- a/types/netmap/netmap.go
 +++ b/types/netmap/netmap.go
-@@ -322,6 +322,7 @@ func (nm *NetworkMap) JSON() string {
+@@ -383,4 +383,5 @@ func (nm *NetworkMap) JSON() string {
  const (
  	AllowSingleHosts WGConfigFlags = 1 << iota
  	AllowSubnetRoutes
 +	AllowLocalRoutes
  )
- 
- // eqStringsIgnoreNil reports whether a and b have the same length and
-diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
-index 3223441c..107e5063 100644
---- a/wgengine/magicsock/magicsock.go
-+++ b/wgengine/magicsock/magicsock.go
-@@ -1126,6 +1126,29 @@ func (c *Conn) startDerpHomeConnectLocked() {
+diff --git a/wgengine/magicsock/derp.go b/wgengine/magicsock/derp.go
+index 947466d2c..3a9d2516b 100644
+--- a/wgengine/magicsock/derp.go
++++ b/wgengine/magicsock/derp.go
+@@ -188,6 +188,32 @@ func (c *Conn) startDerpHomeConnectLocked() {
  	c.goDerpConnect(c.myDerp)
  }
  
++
++
 +func (c *Conn) prepareFallbackDERP(ep *endpoint) {
 +	if len(ep.endpointState) <= 2 {
 +		// derp connected, so the only endpoint is derp
 +		onlyderp := true
 +		for addr := range ep.endpointState {
-+			if addr.Addr() != derpMagicIPAddr {
++			if addr.Addr() != tailcfg.DerpMagicIPAddr {
 +				onlyderp = false
 +				break
 +			}
@@ -330,10 +333,15 @@ index 3223441c..107e5063 100644
 +	}
 +}
 +
++
  // goDerpConnect starts a goroutine to start connecting to the given
  // DERP node.
  //
-@@ -2464,6 +2487,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
+diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
+index e42688602..bdec07d32 100644
+--- a/wgengine/magicsock/magicsock.go
++++ b/wgengine/magicsock/magicsock.go
+@@ -1650,6 +1650,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
  		return
  	}
  
@@ -347,7 +355,7 @@ index 3223441c..107e5063 100644
 +		// derp connected, so the only endpoint is derp
 +		onlyderp := true
 +		for addr := range de.endpointState {
-+			if addr.Addr() != derpMagicIPAddr {
++			if addr.Addr() != tailcfg.DerpMagicIPAddr {
 +				onlyderp = false
 +				break
 +			}
@@ -360,106 +368,33 @@ index 3223441c..107e5063 100644
  	eps := make([]netip.AddrPort, 0, len(c.lastEndpoints))
  	for _, ep := range c.lastEndpoints {
  		eps = append(eps, ep.Addr)
-@@ -2760,6 +2803,7 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
+@@ -1956,6 +1976,7 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
  				oldDiscoKey = epDisco.key
  			}
- 			ep.updateFromNode(n, heartbeatDisabled)
+ 			ep.updateFromNode(n, flags.heartbeatDisabled, flags.probeUDPLifetimeOn)
 +			c.prepareFallbackDERP(ep)
  			c.peerMap.upsertEndpoint(ep, oldDiscoKey) // maybe update discokey mappings in peerMap
  			continue
  		}
-@@ -4181,7 +4225,7 @@ type pendingCLIPing struct {
- 
- 	// derpInactiveCleanupTime is how long a non-home DERP connection
- 	// needs to be idle (last written to) before we close it.
--	derpInactiveCleanupTime = 60 * time.Second
-+	derpInactiveCleanupTime = 180 * time.Second
- 
- 	// derpCleanStaleInterval is how often cleanStaleDerp runs when there
- 	// are potentially-stale DERP connections to close.
-@@ -5150,6 +5194,34 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
- 		// Nothing to do on js/wasm if we can't send UDP packets anyway.
- 		return
- 	}
-+	// Ignore endpoints from isolated peers.
-+	if len(de.endpointState) == 0 {
-+		// derp not initialized yet, so	no endpoints
-+		de.debugUpdates.Add(EndpointChange{
-+			When: time.Now(),
-+			What: "handleCallMeMaybe-isolated-0-ep",
-+			To:   m.MyNumber,
-+		})
-+		return
-+	}
-+	if len(de.endpointState) <= 2 {
-+		// derp connected, so the only endpoint is derp
-+		onlyderp := true
-+		for addr := range de.endpointState {
-+			if addr.Addr() != derpMagicIPAddr {
-+				onlyderp = false
-+				break
-+			}
-+		}
-+		if onlyderp {
-+			de.debugUpdates.Add(EndpointChange{
-+				When: time.Now(),
-+				What: "handleCallMeMaybe-isolated-derp-only",
-+				To:   m.MyNumber,
-+			})
-+			return
-+		}
-+	}
- 	de.mu.Lock()
- 	defer de.mu.Unlock()
- 
-@@ -5157,6 +5229,10 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
- 	for ep := range de.isCallMeMaybeEP {
- 		de.isCallMeMaybeEP[ep] = false // mark for deletion
- 	}
-+	var currentEPs []netip.AddrPort
-+	for ep := range de.endpointState {
-+		currentEPs = append(currentEPs, ep)
-+	}
- 	var newEPs []netip.AddrPort
- 	for _, ep := range m.MyNumber {
- 		if ep.Addr().Is6() && ep.Addr().IsLinkLocalUnicast() {
-@@ -5174,6 +5250,11 @@ func (de *endpoint) handleCallMeMaybe(m *disco.CallMeMaybe) {
- 		}
- 	}
- 	if len(newEPs) > 0 {
-+		de.debugUpdates.Add(EndpointChange{
-+			When: time.Now(),
-+			What: "handleCallMeMaybe-old-endpoints",
-+			To:   currentEPs,
-+		})
- 		de.debugUpdates.Add(EndpointChange{
- 			When: time.Now(),
- 			What: "handleCallMeMaybe-new-endpoints",
 diff --git a/wgengine/wgcfg/nmcfg/nmcfg.go b/wgengine/wgcfg/nmcfg/nmcfg.go
-index f01b42cb..07c4a68a 100644
+index 885d507fa..e50db61db 100644
 --- a/wgengine/wgcfg/nmcfg/nmcfg.go
 +++ b/wgengine/wgcfg/nmcfg/nmcfg.go
-@@ -102,6 +102,17 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
- 
+@@ -100,6 +100,11 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
  		didExitNodeWarn := false
- 		cpeer.V4MasqAddr = peer.SelfNodeV4MasqAddrForThisPeer
+ 		cpeer.V4MasqAddr = peer.SelfNodeV4MasqAddrForThisPeer()
+ 		cpeer.V6MasqAddr = peer.SelfNodeV6MasqAddrForThisPeer()
 +		var localIps []netip.Addr
-+		if nm.SelfNode != nil {
-+			for _, ep := range nm.SelfNode.Endpoints {
-+				addr, err := netip.ParseAddrPort(ep)
-+				if err == nil {
-+					localIps = append(localIps, addr.Addr())
-+				} else {
-+					logf("[v1] wgcfg: unable to parse endpoint %q: %v", ep, err)
-+				}
-+			}
++		for i := range nm.SelfNode.Endpoints().LenIter() {
++			ep := nm.SelfNode.Endpoints().At(i)
++			localIps = append(localIps, ep.Addr())
 +		}
- 		for _, allowedIP := range peer.AllowedIPs {
- 			if allowedIP.Bits() == 0 && peer.StableID != exitNode {
- 				if didExitNodeWarn {
-@@ -127,6 +138,21 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
+ 		for i := range peer.AllowedIPs().LenIter() {
+ 			allowedIP := peer.AllowedIPs().At(i)
+ 			if allowedIP.Bits() == 0 && peer.StableID() != exitNode {
+@@ -126,6 +131,21 @@ func WGCfg(nm *netmap.NetworkMap, logf logger.Logf, flags netmap.WGConfigFlags,
  					}
- 					fmt.Fprintf(skippedSubnets, "%v from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key.ShortString())
+ 					fmt.Fprintf(skippedSubnets, "%v from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key().ShortString())
  					continue
 +				} else if (flags & netmap.AllowLocalRoutes) == 0 {
 +					ignoreRoute := false
@@ -473,7 +408,7 @@ index f01b42cb..07c4a68a 100644
 +						if skippedSubnets.Len() > 0 {
 +							skippedSubnets.WriteString(", ")
 +						}
-+						fmt.Fprintf(skippedSubnets, "%v (localip) from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key.ShortString())
++						fmt.Fprintf(skippedSubnets, "%v (localip) from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key().ShortString())
 +						continue
 +					}
  				}
