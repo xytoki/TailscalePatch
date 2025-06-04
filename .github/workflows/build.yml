@@ -10,22 +10,20 @@ jobs:
       matrix:
         platform: [windows, android, linux, linux-arm64]
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - uses: actions/setup-go@v5
         with:
-          go-version: '^1.22.0'
+          go-version: '^1.24.3'
       - run: go version
       - uses: szenius/set-timezone@v1.1
         with:
           timezoneLinux: "Asia/Shanghai"
           timezoneMacos: "Asia/Shanghai"
           timezoneWindows: "China Standard Time"
-      - uses: pnpm/action-setup@v2
-        with:
-          version: 8.15.1
+      - uses: pnpm/action-setup@v4
       - name: Install patcher dependencies for windows
         if: matrix.platform == 'windows'
         run: sudo apt-get update && bash scripts/pepare-deb.sh
@@ -41,7 +39,7 @@ jobs:
         run: pnpm msipack
       - name: Windows artifact
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: tailscale-windows-setup-patched-amd64
           path: dist/*.msi
@@ -61,7 +59,7 @@ jobs:
           retention-days: 30
       - name: Cache Gradle packages
         if: matrix.platform == 'android'
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.gradle
@@ -71,7 +69,7 @@ jobs:
         run: pnpm build-android
       - name: Android artifact
         if: matrix.platform == 'android'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: tailscale-android-patched
           path: tailscale-android/*.apk
