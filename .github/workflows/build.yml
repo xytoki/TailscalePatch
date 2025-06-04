@@ -51,13 +51,17 @@ jobs:
       - name: Build Linux arm64
         if: matrix.platform == 'linux-arm64'
         run: pnpm build -- --linux --arm64
-      - name: Linux artifact
+      - name: Linux artifact Prepare
         if: matrix.platform == 'linux' || matrix.platform == 'linux-arm64'
-        uses: initdc/upload-artifact@feat/artifact-per-file
-        with:
-          path: dist/*.*
-          artifact-per-file: true
-          retention-days: 30
+        uses: lhotari/gh-actions-artifact-client@v2
+      - name: Linux artifact Uploading
+        if: matrix.platform == 'linux' || matrix.platform == 'linux-arm64'
+        run: |
+          find dist -type f | while read -r file; do
+            name=$(basename "$file")
+            echo "Uploading $name, file: $file"
+            zip - "$file" | gh-actions-artifact-client.js upload "${name}"
+          done
       - name: Cache Gradle packages
         if: matrix.platform == 'android'
         uses: actions/cache@v4

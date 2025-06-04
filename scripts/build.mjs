@@ -9,8 +9,8 @@ if (process.argv.includes('--windows')) {
     // cross for windows amd64
     process.env.GOOS = 'windows';
     process.env.GOARCH = 'amd64';
-    await $`./build_dist.sh -v -o ../dist/tailscale.exe tailscale.com/cmd/tailscale`;
-    await $`./build_dist.sh -v -o ../dist/tailscaled.exe tailscale.com/cmd/tailscaled`;
+    await $`TS_USE_TOOLCHAIN=1 ./build_dist.sh -v -o ../dist/tailscale.exe tailscale.com/cmd/tailscale`;
+    await $`TS_USE_TOOLCHAIN=1 ./build_dist.sh -v -o ../dist/tailscaled.exe tailscale.com/cmd/tailscaled`;
 } else {
     $.env = {
         PATH: process.env.PATH,
