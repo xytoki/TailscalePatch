@@ -1,53 +1,57 @@
-From d571e435d206efd82e2da8d739324760f786852e Mon Sep 17 00:00:00 2001
+From 262d749d48db6016014fc37a418163b252041091 Mon Sep 17 00:00:00 2001
 From: xiaoyu <7547189+xytoki@users.noreply.github.com>
-Date: Fri, 13 Feb 2026 12:24:06 +0000
+Date: Fri, 13 Feb 2026 14:31:25 +0000
 Subject: [PATCH] xy-patch-latest
 
 ---
- cmd/tailscale/cli/set.go        |  3 +++
- cmd/tailscale/cli/up.go         |  6 ++++++
- ipn/ipn_clone.go                |  1 +
- ipn/ipn_view.go                 |  5 +++++
- ipn/ipnlocal/local.go           |  5 ++++-
- ipn/prefs.go                    |  8 ++++++++
- net/netcheck/netcheck.go        | 21 +++++++++++++++------
- net/tsaddr/tsaddr.go            | 16 ++++++++++++++--
+ cmd/tailscale/cli/set.go        |  6 +++++
+ cmd/tailscale/cli/up.go         |  9 +++++++
+ ipn/ipn_clone.go                |  2 ++
+ ipn/ipn_view.go                 | 11 ++++++++
+ ipn/ipnlocal/local.go           |  9 ++++++-
+ ipn/prefs.go                    | 19 ++++++++++++++
+ net/netcheck/netcheck.go        | 21 ++++++++++-----
+ net/netmon/state.go             | 46 +++++++++++++++++++++++++++++++++
+ net/tsaddr/tsaddr.go            | 16 ++++++++++--
  types/netmap/netmap.go          |  1 +
- wgengine/magicsock/derp.go      | 23 +++++++++++++++++++++++
- wgengine/magicsock/magicsock.go | 21 +++++++++++++++++++++
- wgengine/wgcfg/nmcfg/nmcfg.go   | 16 ++++++++++++++++
- 12 files changed, 117 insertions(+), 9 deletions(-)
+ wgengine/magicsock/derp.go      | 23 +++++++++++++++++
+ wgengine/magicsock/magicsock.go | 21 +++++++++++++++
+ wgengine/wgcfg/nmcfg/nmcfg.go   | 16 ++++++++++++
+ 13 files changed, 191 insertions(+), 9 deletions(-)
 
 diff --git a/cmd/tailscale/cli/set.go b/cmd/tailscale/cli/set.go
-index 6159008..b75e77f 100644
+index 615900833..c4b4b6706 100644
 --- a/cmd/tailscale/cli/set.go
 +++ b/cmd/tailscale/cli/set.go
-@@ -46,6 +46,7 @@
+@@ -46,6 +46,8 @@
  
  type setArgsT struct {
  	acceptRoutes               bool
 +	acceptLocalRoutes          bool
++	ignoreInterfaces           string
  	acceptDNS                  bool
  	exitNodeIP                 string
  	exitNodeAllowLANAccess     bool
-@@ -76,6 +77,7 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
+@@ -76,6 +78,8 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
  
  	setf.StringVar(&setArgs.profileName, "nickname", "", "nickname for the current account")
  	setf.BoolVar(&setArgs.acceptRoutes, "accept-routes", acceptRouteDefault(goos), "accept routes advertised by other Tailscale nodes")
 +	setf.BoolVar(&setArgs.acceptLocalRoutes, "accept-local-routes", false, "accept routes advertised by other Tailscale nodes even if they overlap with the local machine's routes")
++	setf.StringVar(&setArgs.ignoreInterfaces, "ignore-interfaces", "", "interface name prefixes to ignore when reporting local addresses (comma-separated, e.g. \"docker0,br-,veth\")")
  	setf.BoolVar(&setArgs.acceptDNS, "accept-dns", true, "accept DNS configuration from the admin panel")
  	setf.StringVar(&setArgs.exitNodeIP, "exit-node", "", "Tailscale exit node (IP, base name, or auto:any) for internet traffic, or empty string to not use an exit node")
  	setf.BoolVar(&setArgs.exitNodeAllowLANAccess, "exit-node-allow-lan-access", false, "Allow direct access to the local network when routing traffic via an exit node")
-@@ -146,6 +148,7 @@ func runSet(ctx context.Context, args []string) (retErr error) {
+@@ -146,6 +150,8 @@ func runSet(ctx context.Context, args []string) (retErr error) {
  		Prefs: ipn.Prefs{
  			ProfileName:            setArgs.profileName,
  			RouteAll:               setArgs.acceptRoutes,
 +			RouteLocal:             setArgs.acceptLocalRoutes,
++			IgnoreInterfaces:       setArgs.ignoreInterfaces,
  			CorpDNS:                setArgs.acceptDNS,
  			ExitNodeAllowLANAccess: setArgs.exitNodeAllowLANAccess,
  			ShieldsUp:              setArgs.shieldsUp,
 diff --git a/cmd/tailscale/cli/up.go b/cmd/tailscale/cli/up.go
-index d78cb2d..5ba8606 100644
+index d78cb2d44..a70ca4653 100644
 --- a/cmd/tailscale/cli/up.go
 +++ b/cmd/tailscale/cli/up.go
 @@ -107,6 +107,7 @@ func newUpFlagSet(goos string, upArgs *upArgsT, cmd string) *flag.FlagSet {
@@ -74,40 +78,44 @@ index d78cb2d..5ba8606 100644
  	if distro.Get() == distro.Synology {
  		// ipn.NewPrefs returns a non-zero Netfilter default. But Synology only
  		// supports "off" mode.
-@@ -889,6 +892,7 @@ func init() {
+@@ -889,6 +892,8 @@ func init() {
  	// The rest are 1:1:
  	addPrefFlagMapping("accept-dns", "CorpDNS")
  	addPrefFlagMapping("accept-routes", "RouteAll")
 +	addPrefFlagMapping("accept-local-routes", "RouteLocal")
++	addPrefFlagMapping("ignore-interfaces", "IgnoreInterfaces")
  	addPrefFlagMapping("advertise-tags", "AdvertiseTags")
  	addPrefFlagMapping("hostname", "Hostname")
  	addPrefFlagMapping("login-server", "ControlURL")
-@@ -1145,6 +1149,8 @@ func prefsToFlags(env upCheckEnv, prefs *ipn.Prefs) (flagVal map[string]any) {
+@@ -1145,6 +1150,10 @@ func prefsToFlags(env upCheckEnv, prefs *ipn.Prefs) (flagVal map[string]any) {
  			set(prefs.ControlURL)
  		case "accept-routes":
  			set(prefs.RouteAll)
 +		case "accept-local-routes":
 +			set(prefs.RouteLocal)
++		case "ignore-interfaces":
++			set(prefs.IgnoreInterfaces)
  		case "accept-dns":
  			set(prefs.CorpDNS)
  		case "shields-up":
 diff --git a/ipn/ipn_clone.go b/ipn/ipn_clone.go
-index 94aebef..2e73ab5 100644
+index 94aebefdf..1cc8d3053 100644
 --- a/ipn/ipn_clone.go
 +++ b/ipn/ipn_clone.go
-@@ -73,6 +73,7 @@ func (src *Prefs) Clone() *Prefs {
+@@ -73,6 +73,8 @@ func (src *Prefs) Clone() *Prefs {
  var _PrefsCloneNeedsRegeneration = Prefs(struct {
  	ControlURL                 string
  	RouteAll                   bool
 +	RouteLocal                 bool
++	IgnoreInterfaces           string
  	ExitNodeID                 tailcfg.StableNodeID
  	ExitNodeIP                 netip.Addr
  	AutoExitNode               ExitNodeExpression
 diff --git a/ipn/ipn_view.go b/ipn/ipn_view.go
-index 90560ce..8116d54 100644
+index 90560cec0..990455c44 100644
 --- a/ipn/ipn_view.go
 +++ b/ipn/ipn_view.go
-@@ -233,6 +233,10 @@ func (v PrefsView) ControlURL() string { return v.ж.ControlURL }
+@@ -233,6 +233,15 @@ func (v PrefsView) ControlURL() string { return v.ж.ControlURL }
  // controlled by ExitNodeID/IP below.
  func (v PrefsView) RouteAll() bool { return v.ж.RouteAll }
  
@@ -115,22 +123,39 @@ index 90560ce..8116d54 100644
 +// a local ip address. This is a temporary workaround.
 +func (v PrefsView) RouteLocal() bool { return v.ж.RouteLocal }
 +
++// IgnoreInterfaces is a comma-separated list of interface name prefixes
++// that should be ignored when reporting local addresses to the Tailscale
++// server.
++func (v PrefsView) IgnoreInterfaces() string { return v.ж.IgnoreInterfaces }
++
  // ExitNodeID and ExitNodeIP specify the node that should be used
  // as an exit node for internet traffic. At most one of these
  // should be non-zero.
-@@ -475,6 +479,7 @@ func (v PrefsView) Persist() persist.PersistView { return v.ж.Persist.View() }
+@@ -475,6 +484,8 @@ func (v PrefsView) Persist() persist.PersistView { return v.ж.Persist.View() }
  var _PrefsViewNeedsRegeneration = Prefs(struct {
  	ControlURL                 string
  	RouteAll                   bool
 +	RouteLocal                 bool
++	IgnoreInterfaces           string
  	ExitNodeID                 tailcfg.StableNodeID
  	ExitNodeIP                 netip.Addr
  	AutoExitNode               ExitNodeExpression
 diff --git a/ipn/ipnlocal/local.go b/ipn/ipnlocal/local.go
-index 2785848..59a55c3 100644
+index 27858484a..1c5a1eb20 100644
 --- a/ipn/ipnlocal/local.go
 +++ b/ipn/ipnlocal/local.go
-@@ -5105,6 +5105,9 @@ func (b *LocalBackend) authReconfigLocked() {
+@@ -5089,6 +5089,10 @@ func (b *LocalBackend) authReconfigLocked() {
+ 	}
+ 
+ 	prefs := b.pm.CurrentPrefs()
++
++	// Apply ignored interfaces setting
++	netmon.SetIgnoredInterfaces(prefs.IgnoreInterfaces())
++
+ 	hasPAC := b.interfaceState.HasPAC()
+ 	disableSubnetsIfPAC := cn.SelfHasCap(tailcfg.NodeAttrDisableSubnetsIfPAC)
+ 	dohURL, dohURLOK := cn.exitNodeCanProxyDNS(prefs.ExitNodeID())
+@@ -5105,6 +5109,9 @@ func (b *LocalBackend) authReconfigLocked() {
  	if prefs.RouteAll() {
  		flags |= netmap.AllowSubnetRoutes
  	}
@@ -140,7 +165,7 @@ index 2785848..59a55c3 100644
  	if hasPAC && disableSubnetsIfPAC {
  		if flags&netmap.AllowSubnetRoutes != 0 {
  			b.logf("authReconfig: have PAC; disabling subnet routes")
-@@ -5141,7 +5144,7 @@ func (b *LocalBackend) authReconfigLocked() {
+@@ -5141,7 +5148,7 @@ func (b *LocalBackend) authReconfigLocked() {
  	if err == wgengine.ErrNoChanges {
  		return
  	}
@@ -150,10 +175,10 @@ index 2785848..59a55c3 100644
  	b.initPeerAPIListenerLocked()
  	if buildfeatures.HasAppConnectors {
 diff --git a/ipn/prefs.go b/ipn/prefs.go
-index 72e0cf8..557a5f0 100644
+index 72e0cf8b7..a1eaa96d1 100644
 --- a/ipn/prefs.go
 +++ b/ipn/prefs.go
-@@ -79,6 +79,10 @@ type Prefs struct {
+@@ -79,6 +79,16 @@ type Prefs struct {
  	// controlled by ExitNodeID/IP below.
  	RouteAll bool
  
@@ -161,34 +186,45 @@ index 72e0cf8..557a5f0 100644
 +	// a local ip address. This is a temporary workaround.
 +	RouteLocal bool
 +
++	// IgnoreInterfaces is a comma-separated list of interface name prefixes
++	// that should be ignored when reporting local addresses to the Tailscale
++	// server. For example, "docker0,br-,veth" would ignore docker0, any
++	// interface starting with br-, and any interface starting with veth.
++	IgnoreInterfaces string
++
  	// ExitNodeID and ExitNodeIP specify the node that should be used
  	// as an exit node for internet traffic. At most one of these
  	// should be non-zero.
-@@ -355,6 +359,7 @@ type MaskedPrefs struct {
+@@ -355,6 +365,8 @@ type MaskedPrefs struct {
  
  	ControlURLSet                 bool                `json:",omitempty"`
  	RouteAllSet                   bool                `json:",omitempty"`
 +	RouteLocalSet                 bool                `json:",omitempty"`
++	IgnoreInterfacesSet           bool                `json:",omitempty"`
  	ExitNodeIDSet                 bool                `json:",omitempty"`
  	ExitNodeIPSet                 bool                `json:",omitempty"`
  	AutoExitNodeSet               bool                `json:",omitempty"`
-@@ -545,6 +550,7 @@ func (p *Prefs) pretty(goos string) string {
+@@ -545,6 +557,10 @@ func (p *Prefs) pretty(goos string) string {
  	sb.WriteString("Prefs{")
  	if buildfeatures.HasUseRoutes {
  		fmt.Fprintf(&sb, "ra=%v ", p.RouteAll)
 +		fmt.Fprintf(&sb, "rl=%v ", p.RouteLocal)
++	}
++	if p.IgnoreInterfaces != "" {
++		fmt.Fprintf(&sb, "ignore-ifaces=%q ", p.IgnoreInterfaces)
  	}
  	if buildfeatures.HasDNS {
  		fmt.Fprintf(&sb, "dns=%v want=%v ", p.CorpDNS, p.WantRunning)
-@@ -663,6 +669,7 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
+@@ -663,6 +679,8 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
  
  	return p.ControlURL == p2.ControlURL &&
  		p.RouteAll == p2.RouteAll &&
 +		p.RouteLocal == p2.RouteLocal &&
++		p.IgnoreInterfaces == p2.IgnoreInterfaces &&
  		p.ExitNodeID == p2.ExitNodeID &&
  		p.ExitNodeIP == p2.ExitNodeIP &&
  		p.AutoExitNode == p2.AutoExitNode &&
-@@ -738,6 +745,7 @@ func NewPrefs() *Prefs {
+@@ -738,6 +756,7 @@ func NewPrefs() *Prefs {
  		ControlURL: "",
  
  		CorpDNS:             true,
@@ -197,7 +233,7 @@ index 72e0cf8..557a5f0 100644
  		NetfilterMode:       preftype.NetfilterOn,
  		NoStatefulFiltering: opt.NewBool(true),
 diff --git a/net/netcheck/netcheck.go b/net/netcheck/netcheck.go
-index ebcdc4e..7864a37 100644
+index ebcdc4eac..7864a37b3 100644
 --- a/net/netcheck/netcheck.go
 +++ b/net/netcheck/netcheck.go
 @@ -1076,7 +1076,11 @@ func (c *Client) runHTTPOnlyChecks(ctx context.Context, last *Report, rs *report
@@ -242,8 +278,74 @@ index ebcdc4e..7864a37 100644
  		if regionID == prevDERP {
  			oldRegionCurLatency = d
  		}
+diff --git a/net/netmon/state.go b/net/netmon/state.go
+index 10d68ab78..bc6431aeb 100644
+--- a/net/netmon/state.go
++++ b/net/netmon/state.go
+@@ -20,6 +20,7 @@
+ 	"tailscale.com/hostinfo"
+ 	"tailscale.com/net/netaddr"
+ 	"tailscale.com/net/tsaddr"
++	"tailscale.com/syncs"
+ 	"tailscale.com/util/mak"
+ )
+ 
+@@ -35,8 +36,53 @@
+ func isUp(nif *net.Interface) bool       { return nif.Flags&net.FlagUp != 0 }
+ func isLoopback(nif *net.Interface) bool { return nif.Flags&net.FlagLoopback != 0 }
+ 
++// ignoredInterfaces stores interface name patterns to ignore (comma-separated).
++// These interfaces will not have their addresses reported to the Tailscale server.
++var ignoredInterfaces struct {
++	mu       syncs.Mutex
++	patterns []string
++}
++
++// SetIgnoredInterfaces sets a list of interface name patterns to ignore.
++// Patterns are matched as prefixes against interface names.
++// For example, "docker0,br-,veth" would ignore docker0, any interface starting
++// with br-, and any interface starting with veth.
++func SetIgnoredInterfaces(patterns string) {
++	ignoredInterfaces.mu.Lock()
++	defer ignoredInterfaces.mu.Unlock()
++	if patterns == "" {
++		ignoredInterfaces.patterns = nil
++		return
++	}
++	parts := strings.Split(patterns, ",")
++	ignoredInterfaces.patterns = make([]string, 0, len(parts))
++	for _, p := range parts {
++		p = strings.TrimSpace(p)
++		if p != "" {
++			ignoredInterfaces.patterns = append(ignoredInterfaces.patterns, p)
++		}
++	}
++}
++
++// isIgnoredInterface reports whether the given interface name matches any
++// of the user-configured ignore patterns.
++func isIgnoredInterface(name string) bool {
++	ignoredInterfaces.mu.Lock()
++	defer ignoredInterfaces.mu.Unlock()
++	for _, pattern := range ignoredInterfaces.patterns {
++		if strings.HasPrefix(name, pattern) {
++			return true
++		}
++	}
++	return false
++}
++
+ func isProblematicInterface(nif *net.Interface) bool {
+ 	name := nif.Name
++	// Check user-configured ignored interfaces first
++	if isIgnoredInterface(name) {
++		return true
++	}
+ 	// Don't try to send disco/etc packets over zerotier; they effectively
+ 	// DoS each other by doing traffic amplification, both of them
+ 	// preferring/trying to use each other for transport. See:
 diff --git a/net/tsaddr/tsaddr.go b/net/tsaddr/tsaddr.go
-index 1eac9eb..3fae937 100644
+index 1eac9eb77..3fae937cd 100644
 --- a/net/tsaddr/tsaddr.go
 +++ b/net/tsaddr/tsaddr.go
 @@ -26,6 +26,18 @@ func ChromeOSVMRange() netip.Prefix {
@@ -282,7 +384,7 @@ index 1eac9eb..3fae937 100644
  
  // TailscaleULARange returns the IPv6 Unique Local Address range that
 diff --git a/types/netmap/netmap.go b/types/netmap/netmap.go
-index ac95254..bc39fb0 100644
+index ac95254da..bc39fb085 100644
 --- a/types/netmap/netmap.go
 +++ b/types/netmap/netmap.go
 @@ -468,6 +468,7 @@ func (nm *NetworkMap) JSON() string {
@@ -294,7 +396,7 @@ index ac95254..bc39fb0 100644
  
  // IPServiceMappings maps IP addresses to service names. This is the inverse of
 diff --git a/wgengine/magicsock/derp.go b/wgengine/magicsock/derp.go
-index b3cc5c2..0cd6d8d 100644
+index b3cc5c2ce..0cd6d8d03 100644
 --- a/wgengine/magicsock/derp.go
 +++ b/wgengine/magicsock/derp.go
 @@ -280,6 +280,29 @@ func (c *Conn) startDerpHomeConnectLocked() {
@@ -328,7 +430,7 @@ index b3cc5c2..0cd6d8d 100644
  // DERP region ID.
  //
 diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
-index b2852d2..698643b 100644
+index b2852d2e2..698643b78 100644
 --- a/wgengine/magicsock/magicsock.go
 +++ b/wgengine/magicsock/magicsock.go
 @@ -2581,6 +2581,26 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
@@ -367,7 +469,7 @@ index b2852d2..698643b 100644
  			continue
  		}
 diff --git a/wgengine/wgcfg/nmcfg/nmcfg.go b/wgengine/wgcfg/nmcfg/nmcfg.go
-index f99b7b0..b0663cb 100644
+index f99b7b007..b0663cbc1 100644
 --- a/wgengine/wgcfg/nmcfg/nmcfg.go
 +++ b/wgengine/wgcfg/nmcfg/nmcfg.go
 @@ -101,6 +101,10 @@ func WGCfg(pk key.NodePrivate, nm *netmap.NetworkMap, logf logger.Logf, flags ne
