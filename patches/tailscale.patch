@@ -1,23 +1,23 @@
-From 262d749d48db6016014fc37a418163b252041091 Mon Sep 17 00:00:00 2001
+From 025c13c773575cf38816ae1f14d2597e5bd48b4d Mon Sep 17 00:00:00 2001
 From: xiaoyu <7547189+xytoki@users.noreply.github.com>
-Date: Fri, 13 Feb 2026 14:31:25 +0000
+Date: Fri, 13 Feb 2026 14:34:28 +0000
 Subject: [PATCH] xy-patch-latest
 
 ---
- cmd/tailscale/cli/set.go        |  6 +++++
- cmd/tailscale/cli/up.go         |  9 +++++++
+ cmd/tailscale/cli/set.go        |  6 ++++
+ cmd/tailscale/cli/up.go         |  9 ++++++
  ipn/ipn_clone.go                |  2 ++
- ipn/ipn_view.go                 | 11 ++++++++
- ipn/ipnlocal/local.go           |  9 ++++++-
- ipn/prefs.go                    | 19 ++++++++++++++
- net/netcheck/netcheck.go        | 21 ++++++++++-----
- net/netmon/state.go             | 46 +++++++++++++++++++++++++++++++++
- net/tsaddr/tsaddr.go            | 16 ++++++++++--
+ ipn/ipn_view.go                 | 11 +++++++
+ ipn/ipnlocal/local.go           |  9 +++++-
+ ipn/prefs.go                    | 19 ++++++++++++
+ net/netcheck/netcheck.go        | 21 +++++++++----
+ net/netmon/state.go             | 52 +++++++++++++++++++++++++++++++++
+ net/tsaddr/tsaddr.go            | 16 ++++++++--
  types/netmap/netmap.go          |  1 +
- wgengine/magicsock/derp.go      | 23 +++++++++++++++++
- wgengine/magicsock/magicsock.go | 21 +++++++++++++++
- wgengine/wgcfg/nmcfg/nmcfg.go   | 16 ++++++++++++
- 13 files changed, 191 insertions(+), 9 deletions(-)
+ wgengine/magicsock/derp.go      | 23 +++++++++++++++
+ wgengine/magicsock/magicsock.go | 21 +++++++++++++
+ wgengine/wgcfg/nmcfg/nmcfg.go   | 16 ++++++++++
+ 13 files changed, 197 insertions(+), 9 deletions(-)
 
 diff --git a/cmd/tailscale/cli/set.go b/cmd/tailscale/cli/set.go
 index 615900833..c4b4b6706 100644
@@ -279,7 +279,7 @@ index ebcdc4eac..7864a37b3 100644
  			oldRegionCurLatency = d
  		}
 diff --git a/net/netmon/state.go b/net/netmon/state.go
-index 10d68ab78..bc6431aeb 100644
+index 10d68ab78..0ef905a39 100644
 --- a/net/netmon/state.go
 +++ b/net/netmon/state.go
 @@ -20,6 +20,7 @@
@@ -290,15 +290,16 @@ index 10d68ab78..bc6431aeb 100644
  	"tailscale.com/util/mak"
  )
  
-@@ -35,8 +36,53 @@
+@@ -35,8 +36,59 @@
  func isUp(nif *net.Interface) bool       { return nif.Flags&net.FlagUp != 0 }
  func isLoopback(nif *net.Interface) bool { return nif.Flags&net.FlagLoopback != 0 }
  
 +// ignoredInterfaces stores interface name patterns to ignore (comma-separated).
 +// These interfaces will not have their addresses reported to the Tailscale server.
 +var ignoredInterfaces struct {
-+	mu       syncs.Mutex
-+	patterns []string
++	mu         syncs.Mutex
++	rawPattern string   // the raw pattern string for change detection
++	patterns   []string // parsed patterns
 +}
 +
 +// SetIgnoredInterfaces sets a list of interface name patterns to ignore.
@@ -308,6 +309,11 @@ index 10d68ab78..bc6431aeb 100644
 +func SetIgnoredInterfaces(patterns string) {
 +	ignoredInterfaces.mu.Lock()
 +	defer ignoredInterfaces.mu.Unlock()
++	// Skip reprocessing if patterns haven't changed
++	if patterns == ignoredInterfaces.rawPattern {
++		return
++	}
++	ignoredInterfaces.rawPattern = patterns
 +	if patterns == "" {
 +		ignoredInterfaces.patterns = nil
 +		return
