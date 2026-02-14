@@ -1,57 +1,60 @@
-From 025c13c773575cf38816ae1f14d2597e5bd48b4d Mon Sep 17 00:00:00 2001
+From c4f79fce431b52cc39ca5f5b0d83a3cb9166a8f7 Mon Sep 17 00:00:00 2001
 From: xiaoyu <7547189+xytoki@users.noreply.github.com>
-Date: Fri, 13 Feb 2026 14:34:28 +0000
+Date: Sat, 14 Feb 2026 04:47:43 +0000
 Subject: [PATCH] xy-patch-latest
 
 ---
- cmd/tailscale/cli/set.go        |  6 ++++
- cmd/tailscale/cli/up.go         |  9 ++++++
- ipn/ipn_clone.go                |  2 ++
- ipn/ipn_view.go                 | 11 +++++++
- ipn/ipnlocal/local.go           |  9 +++++-
- ipn/prefs.go                    | 19 ++++++++++++
+ cmd/tailscale/cli/set.go        |  9 ++++++
+ cmd/tailscale/cli/up.go         | 12 ++++++++
+ ipn/ipn_clone.go                |  3 ++
+ ipn/ipn_view.go                 | 16 ++++++++++
+ ipn/ipnlocal/local.go           | 26 ++++++++++++++++-
+ ipn/prefs.go                    | 30 +++++++++++++++++++
  net/netcheck/netcheck.go        | 21 +++++++++----
  net/netmon/state.go             | 52 +++++++++++++++++++++++++++++++++
  net/tsaddr/tsaddr.go            | 16 ++++++++--
- types/netmap/netmap.go          |  1 +
+ types/netmap/netmap.go          |  6 ++++
  wgengine/magicsock/derp.go      | 23 +++++++++++++++
  wgengine/magicsock/magicsock.go | 21 +++++++++++++
- wgengine/wgcfg/nmcfg/nmcfg.go   | 16 ++++++++++
- 13 files changed, 197 insertions(+), 9 deletions(-)
+ wgengine/wgcfg/nmcfg/nmcfg.go   | 24 +++++++++++++++
+ 13 files changed, 250 insertions(+), 9 deletions(-)
 
 diff --git a/cmd/tailscale/cli/set.go b/cmd/tailscale/cli/set.go
-index 615900833..c4b4b6706 100644
+index 615900833..a89f744c2 100644
 --- a/cmd/tailscale/cli/set.go
 +++ b/cmd/tailscale/cli/set.go
-@@ -46,6 +46,8 @@
+@@ -46,6 +46,9 @@
  
  type setArgsT struct {
  	acceptRoutes               bool
 +	acceptLocalRoutes          bool
 +	ignoreInterfaces           string
++	ignoreRoutes               string
  	acceptDNS                  bool
  	exitNodeIP                 string
  	exitNodeAllowLANAccess     bool
-@@ -76,6 +78,8 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
+@@ -76,6 +79,9 @@ func newSetFlagSet(goos string, setArgs *setArgsT) *flag.FlagSet {
  
  	setf.StringVar(&setArgs.profileName, "nickname", "", "nickname for the current account")
  	setf.BoolVar(&setArgs.acceptRoutes, "accept-routes", acceptRouteDefault(goos), "accept routes advertised by other Tailscale nodes")
 +	setf.BoolVar(&setArgs.acceptLocalRoutes, "accept-local-routes", false, "accept routes advertised by other Tailscale nodes even if they overlap with the local machine's routes")
 +	setf.StringVar(&setArgs.ignoreInterfaces, "ignore-interfaces", "", "interface name prefixes to ignore when reporting local addresses (comma-separated, e.g. \"docker0,br-,veth\")")
++	setf.StringVar(&setArgs.ignoreRoutes, "ignore-routes", "", "CIDR routes to ignore from other nodes (comma-separated, e.g. \"10.0.0.0/8,192.168.1.0/24\")")
  	setf.BoolVar(&setArgs.acceptDNS, "accept-dns", true, "accept DNS configuration from the admin panel")
  	setf.StringVar(&setArgs.exitNodeIP, "exit-node", "", "Tailscale exit node (IP, base name, or auto:any) for internet traffic, or empty string to not use an exit node")
  	setf.BoolVar(&setArgs.exitNodeAllowLANAccess, "exit-node-allow-lan-access", false, "Allow direct access to the local network when routing traffic via an exit node")
-@@ -146,6 +150,8 @@ func runSet(ctx context.Context, args []string) (retErr error) {
+@@ -146,6 +152,9 @@ func runSet(ctx context.Context, args []string) (retErr error) {
  		Prefs: ipn.Prefs{
  			ProfileName:            setArgs.profileName,
  			RouteAll:               setArgs.acceptRoutes,
 +			RouteLocal:             setArgs.acceptLocalRoutes,
 +			IgnoreInterfaces:       setArgs.ignoreInterfaces,
++			IgnoreRoutes:           setArgs.ignoreRoutes,
  			CorpDNS:                setArgs.acceptDNS,
  			ExitNodeAllowLANAccess: setArgs.exitNodeAllowLANAccess,
  			ShieldsUp:              setArgs.shieldsUp,
 diff --git a/cmd/tailscale/cli/up.go b/cmd/tailscale/cli/up.go
-index d78cb2d44..a70ca4653 100644
+index d78cb2d44..63bd65b4d 100644
 --- a/cmd/tailscale/cli/up.go
 +++ b/cmd/tailscale/cli/up.go
 @@ -107,6 +107,7 @@ func newUpFlagSet(goos string, upArgs *upArgsT, cmd string) *flag.FlagSet {
@@ -78,16 +81,17 @@ index d78cb2d44..a70ca4653 100644
  	if distro.Get() == distro.Synology {
  		// ipn.NewPrefs returns a non-zero Netfilter default. But Synology only
  		// supports "off" mode.
-@@ -889,6 +892,8 @@ func init() {
+@@ -889,6 +892,9 @@ func init() {
  	// The rest are 1:1:
  	addPrefFlagMapping("accept-dns", "CorpDNS")
  	addPrefFlagMapping("accept-routes", "RouteAll")
 +	addPrefFlagMapping("accept-local-routes", "RouteLocal")
 +	addPrefFlagMapping("ignore-interfaces", "IgnoreInterfaces")
++	addPrefFlagMapping("ignore-routes", "IgnoreRoutes")
  	addPrefFlagMapping("advertise-tags", "AdvertiseTags")
  	addPrefFlagMapping("hostname", "Hostname")
  	addPrefFlagMapping("login-server", "ControlURL")
-@@ -1145,6 +1150,10 @@ func prefsToFlags(env upCheckEnv, prefs *ipn.Prefs) (flagVal map[string]any) {
+@@ -1145,6 +1151,12 @@ func prefsToFlags(env upCheckEnv, prefs *ipn.Prefs) (flagVal map[string]any) {
  			set(prefs.ControlURL)
  		case "accept-routes":
  			set(prefs.RouteAll)
@@ -95,27 +99,30 @@ index d78cb2d44..a70ca4653 100644
 +			set(prefs.RouteLocal)
 +		case "ignore-interfaces":
 +			set(prefs.IgnoreInterfaces)
++		case "ignore-routes":
++			set(prefs.IgnoreRoutes)
  		case "accept-dns":
  			set(prefs.CorpDNS)
  		case "shields-up":
 diff --git a/ipn/ipn_clone.go b/ipn/ipn_clone.go
-index 94aebefdf..1cc8d3053 100644
+index 94aebefdf..eaa108c29 100644
 --- a/ipn/ipn_clone.go
 +++ b/ipn/ipn_clone.go
-@@ -73,6 +73,8 @@ func (src *Prefs) Clone() *Prefs {
+@@ -73,6 +73,9 @@ func (src *Prefs) Clone() *Prefs {
  var _PrefsCloneNeedsRegeneration = Prefs(struct {
  	ControlURL                 string
  	RouteAll                   bool
 +	RouteLocal                 bool
 +	IgnoreInterfaces           string
++	IgnoreRoutes               string
  	ExitNodeID                 tailcfg.StableNodeID
  	ExitNodeIP                 netip.Addr
  	AutoExitNode               ExitNodeExpression
 diff --git a/ipn/ipn_view.go b/ipn/ipn_view.go
-index 90560cec0..990455c44 100644
+index 90560cec0..bcda4f62b 100644
 --- a/ipn/ipn_view.go
 +++ b/ipn/ipn_view.go
-@@ -233,6 +233,15 @@ func (v PrefsView) ControlURL() string { return v.ж.ControlURL }
+@@ -233,6 +233,19 @@ func (v PrefsView) ControlURL() string { return v.ж.ControlURL }
  // controlled by ExitNodeID/IP below.
  func (v PrefsView) RouteAll() bool { return v.ж.RouteAll }
  
@@ -128,20 +135,25 @@ index 90560cec0..990455c44 100644
 +// server.
 +func (v PrefsView) IgnoreInterfaces() string { return v.ж.IgnoreInterfaces }
 +
++// IgnoreRoutes is a comma-separated list of CIDR prefixes that should be
++// ignored when accepting routes advertised by other nodes.
++func (v PrefsView) IgnoreRoutes() string { return v.ж.IgnoreRoutes }
++
  // ExitNodeID and ExitNodeIP specify the node that should be used
  // as an exit node for internet traffic. At most one of these
  // should be non-zero.
-@@ -475,6 +484,8 @@ func (v PrefsView) Persist() persist.PersistView { return v.ж.Persist.View() }
+@@ -475,6 +488,9 @@ func (v PrefsView) Persist() persist.PersistView { return v.ж.Persist.View() }
  var _PrefsViewNeedsRegeneration = Prefs(struct {
  	ControlURL                 string
  	RouteAll                   bool
 +	RouteLocal                 bool
 +	IgnoreInterfaces           string
++	IgnoreRoutes               string
  	ExitNodeID                 tailcfg.StableNodeID
  	ExitNodeIP                 netip.Addr
  	AutoExitNode               ExitNodeExpression
 diff --git a/ipn/ipnlocal/local.go b/ipn/ipnlocal/local.go
-index 27858484a..1c5a1eb20 100644
+index e9222cde3..e9ab1ce0f 100644
 --- a/ipn/ipnlocal/local.go
 +++ b/ipn/ipnlocal/local.go
 @@ -5089,6 +5089,10 @@ func (b *LocalBackend) authReconfigLocked() {
@@ -165,7 +177,31 @@ index 27858484a..1c5a1eb20 100644
  	if hasPAC && disableSubnetsIfPAC {
  		if flags&netmap.AllowSubnetRoutes != 0 {
  			b.logf("authReconfig: have PAC; disabling subnet routes")
-@@ -5141,7 +5148,7 @@ func (b *LocalBackend) authReconfigLocked() {
+@@ -5128,6 +5135,23 @@ func (b *LocalBackend) authReconfigLocked() {
+ 		priv = key.NodePrivate{}
+ 	}
+ 
++	// Parse and set IgnoreRoutes from preferences
++	if ignoreRoutesStr := prefs.IgnoreRoutes(); ignoreRoutesStr != "" {
++		var ignoreRoutes []netip.Prefix
++		for _, s := range strings.Split(ignoreRoutesStr, ",") {
++			s = strings.TrimSpace(s)
++			if s == "" {
++				continue
++			}
++			if p, err := netip.ParsePrefix(s); err == nil {
++				ignoreRoutes = append(ignoreRoutes, p)
++			} else {
++				b.logf("authReconfig: invalid ignore-routes prefix %q: %v", s, err)
++			}
++		}
++		nm.IgnoreRoutes = ignoreRoutes
++	}
++
+ 	cfg, err := nmcfg.WGCfg(priv, nm, b.logf, flags, prefs.ExitNodeID())
+ 	if err != nil {
+ 		b.logf("wgcfg: %v", err)
+@@ -5141,7 +5165,7 @@ func (b *LocalBackend) authReconfigLocked() {
  	if err == wgengine.ErrNoChanges {
  		return
  	}
@@ -175,10 +211,10 @@ index 27858484a..1c5a1eb20 100644
  	b.initPeerAPIListenerLocked()
  	if buildfeatures.HasAppConnectors {
 diff --git a/ipn/prefs.go b/ipn/prefs.go
-index 72e0cf8b7..a1eaa96d1 100644
+index 72e0cf8b7..2879df550 100644
 --- a/ipn/prefs.go
 +++ b/ipn/prefs.go
-@@ -79,6 +79,16 @@ type Prefs struct {
+@@ -79,6 +79,22 @@ type Prefs struct {
  	// controlled by ExitNodeID/IP below.
  	RouteAll bool
  
@@ -192,19 +228,26 @@ index 72e0cf8b7..a1eaa96d1 100644
 +	// interface starting with br-, and any interface starting with veth.
 +	IgnoreInterfaces string
 +
++	// IgnoreRoutes is a comma-separated list of CIDR prefixes that should be
++	// ignored when accepting routes advertised by other nodes. For example,
++	// "10.0.0.0/8,192.168.1.0/24" would ignore any routes that overlap with
++	// these prefixes even if accept-routes is enabled.
++	IgnoreRoutes string
++
  	// ExitNodeID and ExitNodeIP specify the node that should be used
  	// as an exit node for internet traffic. At most one of these
  	// should be non-zero.
-@@ -355,6 +365,8 @@ type MaskedPrefs struct {
+@@ -355,6 +371,9 @@ type MaskedPrefs struct {
  
  	ControlURLSet                 bool                `json:",omitempty"`
  	RouteAllSet                   bool                `json:",omitempty"`
 +	RouteLocalSet                 bool                `json:",omitempty"`
 +	IgnoreInterfacesSet           bool                `json:",omitempty"`
++	IgnoreRoutesSet               bool                `json:",omitempty"`
  	ExitNodeIDSet                 bool                `json:",omitempty"`
  	ExitNodeIPSet                 bool                `json:",omitempty"`
  	AutoExitNodeSet               bool                `json:",omitempty"`
-@@ -545,6 +557,10 @@ func (p *Prefs) pretty(goos string) string {
+@@ -545,6 +564,13 @@ func (p *Prefs) pretty(goos string) string {
  	sb.WriteString("Prefs{")
  	if buildfeatures.HasUseRoutes {
  		fmt.Fprintf(&sb, "ra=%v ", p.RouteAll)
@@ -212,19 +255,23 @@ index 72e0cf8b7..a1eaa96d1 100644
 +	}
 +	if p.IgnoreInterfaces != "" {
 +		fmt.Fprintf(&sb, "ignore-ifaces=%q ", p.IgnoreInterfaces)
++	}
++	if p.IgnoreRoutes != "" {
++		fmt.Fprintf(&sb, "ignore-routes=%q ", p.IgnoreRoutes)
  	}
  	if buildfeatures.HasDNS {
  		fmt.Fprintf(&sb, "dns=%v want=%v ", p.CorpDNS, p.WantRunning)
-@@ -663,6 +679,8 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
+@@ -663,6 +689,9 @@ func (p *Prefs) Equals(p2 *Prefs) bool {
  
  	return p.ControlURL == p2.ControlURL &&
  		p.RouteAll == p2.RouteAll &&
 +		p.RouteLocal == p2.RouteLocal &&
 +		p.IgnoreInterfaces == p2.IgnoreInterfaces &&
++		p.IgnoreRoutes == p2.IgnoreRoutes &&
  		p.ExitNodeID == p2.ExitNodeID &&
  		p.ExitNodeIP == p2.ExitNodeIP &&
  		p.AutoExitNode == p2.AutoExitNode &&
-@@ -738,6 +756,7 @@ func NewPrefs() *Prefs {
+@@ -738,6 +767,7 @@ func NewPrefs() *Prefs {
  		ControlURL: "",
  
  		CorpDNS:             true,
@@ -390,10 +437,22 @@ index 1eac9eb77..3fae937cd 100644
  
  // TailscaleULARange returns the IPv6 Unique Local Address range that
 diff --git a/types/netmap/netmap.go b/types/netmap/netmap.go
-index ac95254da..bc39fb085 100644
+index ac95254da..8bfc7fb0c 100644
 --- a/types/netmap/netmap.go
 +++ b/types/netmap/netmap.go
-@@ -468,6 +468,7 @@ func (nm *NetworkMap) JSON() string {
+@@ -77,6 +77,11 @@ type NetworkMap struct {
+ 	// UserProfiles contains the profile information of UserIDs referenced
+ 	// in SelfNode and Peers.
+ 	UserProfiles map[tailcfg.UserID]tailcfg.UserProfileView
++
++	// IgnoreRoutes is a list of CIDR prefixes to ignore when accepting
++	// routes advertised by other nodes. Routes that overlap with these
++	// prefixes will not be installed.
++	IgnoreRoutes []netip.Prefix
+ }
+ 
+ // User returns nm.SelfNode.User if nm.SelfNode is non-nil, otherwise it returns
+@@ -468,6 +473,7 @@ func (nm *NetworkMap) JSON() string {
  const (
  	_ WGConfigFlags = 1 << iota
  	AllowSubnetRoutes
@@ -475,7 +534,7 @@ index b2852d2e2..698643b78 100644
  			continue
  		}
 diff --git a/wgengine/wgcfg/nmcfg/nmcfg.go b/wgengine/wgcfg/nmcfg/nmcfg.go
-index f99b7b007..b0663cbc1 100644
+index f99b7b007..2bea10cad 100644
 --- a/wgengine/wgcfg/nmcfg/nmcfg.go
 +++ b/wgengine/wgcfg/nmcfg/nmcfg.go
 @@ -101,6 +101,10 @@ func WGCfg(pk key.NodePrivate, nm *netmap.NetworkMap, logf logger.Logf, flags ne
@@ -489,7 +548,7 @@ index f99b7b007..b0663cbc1 100644
  		for _, allowedIP := range peer.AllowedIPs().All() {
  			if allowedIP.Bits() == 0 && peer.StableID() != exitNode {
  				if didExitNodeLog {
-@@ -114,6 +118,18 @@ func WGCfg(pk key.NodePrivate, nm *netmap.NetworkMap, logf logger.Logf, flags ne
+@@ -114,9 +118,29 @@ func WGCfg(pk key.NodePrivate, nm *netmap.NetworkMap, logf logger.Logf, flags ne
  				if (flags & netmap.AllowSubnetRoutes) == 0 {
  					skippedSubnetRouter = append(skippedSubnetRouter, peer)
  					continue
@@ -505,9 +564,20 @@ index f99b7b007..b0663cbc1 100644
 +						logf("[v1] wgcfg: skipping local subnet route %v from %q (%v)", allowedIP, nodeDebugName(peer), peer.Key().ShortString())
 +						continue
 +					}
++				}
++				// Check against user-defined ignore routes
++				for _, ignorePrefix := range nm.IgnoreRoutes {
++					if allowedIP.Overlaps(ignorePrefix) {
++						logf("[v1] wgcfg: skipping ignored route %v (matches %v) from %q (%v)", allowedIP, ignorePrefix, nodeDebugName(peer), peer.Key().ShortString())
++						goto nextAllowedIP
++					}
  				}
  			}
  			cpeer.AllowedIPs = append(cpeer.AllowedIPs, allowedIP)
++		nextAllowedIP:
+ 		}
+ 	}
+ 
 -- 
 2.52.0
 
