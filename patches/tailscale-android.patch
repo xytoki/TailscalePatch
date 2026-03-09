@@ -1,290 +1,531 @@
-diff --git a/cmd/tailscale/main.go b/cmd/tailscale/main.go
-index 7599509..63456ad 100644
---- a/cmd/tailscale/main.go
-+++ b/cmd/tailscale/main.go
-@@ -38,6 +38,7 @@ import (
- 	"tailscale.com/hostinfo"
- 	"tailscale.com/ipn"
- 	"tailscale.com/ipn/ipnlocal"
-+	"tailscale.com/ipn/ipnstate"
- 	"tailscale.com/net/dns"
- 	"tailscale.com/net/interfaces"
- 	"tailscale.com/net/netns"
-@@ -151,6 +152,9 @@ type BackendState struct {
- 	ExitStatus ExitStatus
- 	// Exit is our current exit node, if any.
- 	Exit Peer
+diff --git a/Makefile b/Makefile
+index b7e969a..db3a95f 100644
+--- a/Makefile
++++ b/Makefile
+@@ -14,6 +14,7 @@ DOCKER_IMAGE := tailscale-android-build-amd64-041425-1
+ export TS_USE_TOOLCHAIN=1
+ 
+ DEBUG_APK := tailscale-debug.apk
++RELEASE_APK := tailscale-release.apk
+ RELEASE_AAB := tailscale-release.aab
+ RELEASE_TV_AAB := tailscale-tv-release.aab
+ 
+@@ -123,6 +124,14 @@ $(DEBUG_APK): libtailscale debug-symbols version gradle-dependencies build-unstr
+ 	(cd android && ./gradlew test assembleDebug)
+ 	install -C android/build/outputs/apk/debug/android-debug.apk $@
+ 
++# Builds the release APK signed with debug keystore
++.PHONY: tailscale-release-apk
++tailscale-release-apk: $(RELEASE_APK)
 +
-+	Status         map[tailcfg.StableNodeID]*ipnstate.PeerStatus
-+	StatusFetching bool
- }
- 
- // UIEvent is an event flowing from the UI to the backend.
-@@ -194,12 +198,14 @@ type (
- 	WebAuthEvent                   struct{}
- 	GoogleAuthEvent                struct{}
- 	LogoutEvent                    struct{}
-+	RefreshEvent                   struct{}
- 	OSSLicensesEvent               struct{}
- 	BeExitNodeEvent                bool
- 	ExitAllowLANEvent              bool
- 	AllowIncomingTransactionsEvent bool
- 	UseTailscaleDNSEvent           bool
- 	UseTailscaleSubnetsEvent       bool
-+	UseTailscaleLocalSubnetsEvent  bool
- )
- 
- // serverOAuthID is the OAuth ID of the tailscale-android server, used
-@@ -402,6 +408,26 @@ func (a *App) runBackend() error {
- 					alarm(a.notifyExpiry(service, m.Expiry))
- 				}
- 			}
-+			if n.Engine != nil || n.NetMap != nil || n.State != nil {
-+				if state.State == ipn.Running {
-+					if !state.StatusFetching {
-+						go func() {
-+							state.StatusFetching = true
-+							st := b.backend.Status()
-+							peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
-+							for _, p := range st.Peer {
-+								peers[p.ID] = p
-+							}
-+							state.Status = peers
-+							a.notify(state)
-+							state.StatusFetching = false
-+						}()
-+					}
-+				} else {
-+					state.Status = make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
-+					a.notify(state)
-+				}
-+			}
- 			// Notify if a previously online exit is not longer online (or missing).
- 			if service != 0 && exitWasOnline && state.ExitStatus == ExitOffline {
- 				a.pushNotify(service, "Connection Lost", "Your exit node is offline. Disable your exit node or contact your network admin for help.")
-@@ -437,9 +463,24 @@ func (a *App) runBackend() error {
- 			case ExitAllowLANEvent:
- 				state.Prefs.ExitNodeAllowLANAccess = bool(e)
- 				go b.backend.SetPrefs(state.Prefs)
-+			case RefreshEvent:
-+				go func() {
-+					state.StatusFetching = true
-+					st := b.backend.Status()
-+					peers := make(map[tailcfg.StableNodeID]*ipnstate.PeerStatus)
-+					for _, p := range st.Peer {
-+						peers[p.ID] = p
-+					}
-+					state.Status = peers
-+					a.notify(state)
-+					state.StatusFetching = false
-+				}()
- 			case UseTailscaleDNSEvent:
- 				state.Prefs.CorpDNS = bool(e)
- 				go b.backend.SetPrefs(state.Prefs)
-+			case UseTailscaleLocalSubnetsEvent:
-+				state.Prefs.RouteLocal = bool(e)
-+				go b.backend.SetPrefs(state.Prefs)
- 			case UseTailscaleSubnetsEvent:
- 				state.Prefs.RouteAll = !bool(e)
- 				go b.backend.SetPrefs(state.Prefs)
-@@ -909,6 +950,10 @@ func (a *App) runUI() error {
- 			ui.enabled.Value = p.WantRunning
- 			ui.runningExit = p.AdvertisesExitNode()
- 			ui.exitLAN.Value = p.ExitNodeAllowLANAccess
-+			ui.useTailscaleDNS.Value = p.CorpDNS
-+			ui.useTailscaleSubnets.Value = p.RouteAll
-+			ui.useTailscaleLocalSubnets.Value = p.RouteLocal
-+			ui.allowIncomingTransactions.Value = p.ShieldsUp
- 			w.Invalidate()
- 		case url := <-a.browseURLs:
- 			ui.signinType = noSignin
-@@ -1048,6 +1093,7 @@ func (a *App) updateState(act jni.Object, state *clientState) {
- 	}
- 
- 	netmap := state.backend.NetworkMap
-+	pstatus := state.backend.Status
- 	var (
- 		peers []*tailcfg.Node
- 		myID  tailcfg.UserID
-@@ -1074,15 +1120,16 @@ func (a *App) updateState(act jni.Object, state *clientState) {
- 		}
- 		users[p.User] = struct{}{}
- 		uiPeers = append(uiPeers, UIPeer{
--			Owner: p.User,
--			Peer:  p,
-+			Owner:  p.User,
-+			Peer:   p,
-+			Status: pstatus[p.StableID],
- 		})
- 	}
- 	// Add section (user) headers.
- 	for u := range users {
- 		name := netmap.UserProfiles[u].DisplayName
- 		name = strings.ToUpper(name)
--		uiPeers = append(uiPeers, UIPeer{Owner: u, Name: name})
-+		uiPeers = append(uiPeers, UIPeer{Owner: u, Name: name, Status: nil})
- 	}
- 	sort.Slice(uiPeers, func(i, j int) bool {
- 		lhs, rhs := uiPeers[i], uiPeers[j]
-@@ -1146,6 +1193,8 @@ func (a *App) processUIEvents(w *app.Window, events []UIEvent, act jni.Object, s
- 			requestBackend(e)
- 		case UseTailscaleDNSEvent:
- 			requestBackend(e)
-+		case UseTailscaleLocalSubnetsEvent:
-+			requestBackend(e)
- 		case UseTailscaleSubnetsEvent:
- 			requestBackend(e)
- 		case WebAuthEvent:
-@@ -1157,6 +1206,8 @@ func (a *App) processUIEvents(w *app.Window, events []UIEvent, act jni.Object, s
- 		case LogoutEvent:
- 			a.signOut()
- 			requestBackend(e)
-+		case RefreshEvent:
-+			requestBackend(e)
- 		case ConnectEvent:
- 			requestBackend(e)
- 		case RouteAllEvent:
-diff --git a/cmd/tailscale/ui.go b/cmd/tailscale/ui.go
-index e6d3560..16f8d4a 100644
---- a/cmd/tailscale/ui.go
-+++ b/cmd/tailscale/ui.go
-@@ -30,6 +30,7 @@ import (
- 	"golang.org/x/exp/shiny/materialdesign/icons"
- 	"tailscale.com/client/tailscale/apitype"
- 	"tailscale.com/ipn"
-+	"tailscale.com/ipn/ipnstate"
- 	"tailscale.com/tailcfg"
- 	"tailscale.com/version"
- 
-@@ -56,6 +57,7 @@ type UI struct {
- 	allowIncomingTransactions widget.Bool
- 	useTailscaleDNS           widget.Bool
- 	useTailscaleSubnets       widget.Bool
-+	useTailscaleLocalSubnets  widget.Bool
- 
- 	// webSigin is the button for the web-based sign-in flow.
- 	webSignin widget.Clickable
-@@ -117,6 +119,7 @@ type UI struct {
- 
- 		useLoginServer widget.Clickable
- 		copy           widget.Clickable
-+		refresh        widget.Clickable
- 		preferences    widget.Clickable
- 		reauth         widget.Clickable
- 		bug            widget.Clickable
-@@ -182,6 +185,8 @@ type UIPeer struct {
- 	Name string
- 	// Peer is nil for section headers.
- 	Peer *tailcfg.Node
++$(RELEASE_APK): libtailscale debug-symbols version gradle-dependencies build-unstripped-aar
++	(cd android && ./gradlew test assembleRelease)
++	install -C android/build/outputs/apk/release/android-release.apk $@
 +
-+	Status *ipnstate.PeerStatus
- }
+ # Builds the release AAB and signs it (phone/tablet/chromeOS variant)
+ .PHONY: release
+ release: jarsign-env $(RELEASE_AAB)
+@@ -376,7 +385,7 @@ docker-remove-shell-image: ## Removes all docker shell image
+ .PHONY: clean
+ clean: ## Remove build artifacts. Does not purge docker build envs. Use dockerRemoveEnv for that.
+ 	@echo "Cleaning up old build artifacts"
+-	-rm -rf android/build $(DEBUG_APK) $(RELEASE_AAB) $(RELEASE_TV_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
++	-rm -rf android/build $(DEBUG_APK) $(RELEASE_APK) $(RELEASE_AAB) $(RELEASE_TV_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
+ 	@echo "Cleaning cached toolchain"
+ 	-rm -rf $(HOME)/.cache/tailscale-go{,.extracted}
+ 	-pkill -f gradle
+diff --git a/android/build.gradle b/android/build.gradle
+index 8f64b3d..2c5b819 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -76,6 +76,15 @@ android {
+     flavorDimensions "version"
+     namespace 'com.tailscale.ipn'
  
- // menuItem describes an item in a popup menu.
-@@ -409,6 +414,9 @@ func (ui *UI) layout(gtx layout.Context, sysIns system.Insets, state *clientStat
- 	if ui.useTailscaleDNS.Changed() {
- 		events = append(events, UseTailscaleDNSEvent(ui.useTailscaleDNS.Value))
- 	}
-+	if ui.useTailscaleLocalSubnets.Changed() {
-+		events = append(events, UseTailscaleLocalSubnetsEvent(ui.useTailscaleLocalSubnets.Value))
-+	}
- 	if ui.useTailscaleSubnets.Changed() {
- 		events = append(events, UseTailscaleSubnetsEvent(ui.useTailscaleSubnets.Value))
- 	}
-@@ -483,6 +491,10 @@ func (ui *UI) layout(gtx layout.Context, sysIns system.Insets, state *clientStat
- 		events = append(events, LogoutEvent{})
- 	}
- 
-+	if ui.menuClicked(&ui.menu.refresh) {
-+		events = append(events, RefreshEvent{})
-+	}
++    signingConfigs {
++        release {
++            storeFile android.signingConfigs.debug.storeFile
++            storePassword android.signingConfigs.debug.storePassword
++            keyAlias android.signingConfigs.debug.keyAlias
++            keyPassword android.signingConfigs.debug.keyPassword
++        }
++    }
 +
- 	for i := range ui.shareDialog.targets {
- 		t := &ui.shareDialog.targets[i]
- 		select {
-@@ -1172,6 +1184,14 @@ func (ui *UI) layoutPreferencesDialog(gtx layout.Context, sysIns system.Insets,
- 							Bottom: unit.Dp(16),
- 						}.Layout(gtx, btn.Layout)
- 					}),
-+					layout.Rigid(func(gtx C) D {
-+						btn := material.CheckBox(ui.theme, &ui.useTailscaleLocalSubnets, "Override Local Subnets")
-+						return layout.Inset{
-+							Right:  unit.Dp(16),
-+							Left:   unit.Dp(16),
-+							Bottom: unit.Dp(16),
-+						}.Layout(gtx, btn.Layout)
-+					}),
- 				)
- 			})
- 		})
-@@ -1316,6 +1336,7 @@ func (ui *UI) layoutMenu(gtx layout.Context, sysIns system.Insets, expiry time.T
- 			items := []menuItem{
- 				{title: "Copy my IP address", btn: &menu.copy},
- 			}
-+			items = append(items, menuItem{title: "Refresh status", btn: &menu.refresh})
- 			if showExits {
- 				items = append(items, menuItem{title: "Use exit node...", btn: &menu.exits})
- 			}
-@@ -1412,7 +1433,13 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
- 				layout.Rigid(func(gtx C) D {
- 					return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx C) D {
- 						name := p.Peer.DisplayName(p.Peer.User == user)
--						return material.H6(ui.theme, name).Layout(gtx)
-+						label := material.H6(ui.theme, name)
-+						if p.Status == nil {
-+							label.Color = rgb(0x434343)
-+						} else if !p.Status.Online {
-+							label.Color = rgb(0x8f8f8f)
-+						}
-+						return label.Layout(gtx)
- 					})
- 				}),
- 				layout.Rigid(func(gtx C) D {
-@@ -1422,9 +1449,29 @@ func (ui *UI) layoutPeer(gtx layout.Context, sysIns system.Insets, p *UIPeer, us
- 							bestIP = ip
- 						}
- 					}
--					l := material.Body2(ui.theme, bestIP.String())
--					l.Color = rgb(0x434343)
--					return l.Layout(gtx)
-+					var connstr string
-+					if p.Status != nil && p.Status.Online {
-+						if p.Status.Relay != "" && p.Status.CurAddr == "" {
-+							connstr = p.Status.Relay
-+						} else if p.Status.CurAddr != "" {
-+							connstr = p.Status.CurAddr
-+						}
-+					}
-+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-+						layout.Flexed(4.0, func(gtx C) D {
-+							l := material.Body2(ui.theme, bestIP.String())
-+							l.Color = rgb(0x434343)
-+							l.Font.Variant = "Mono"
-+							return l.Layout(gtx)
-+						}),
-+						layout.Flexed(5.0, func(gtx C) D {
-+							l := material.Body2(ui.theme, connstr)
-+							l.Color = rgb(0x434343)
-+							l.Font.Variant = "Mono"
-+							l.Alignment = text.End
-+							return l.Layout(gtx)
-+						}),
-+					)
- 				}),
- 			)
- 		})
+     buildTypes {
+         applicationTest {
+             initWith debug
+@@ -88,6 +97,7 @@ android {
+             manifestPlaceholders.leanbackRequired = false
+         }
+         release {
++            signingConfig signingConfigs.release
+             manifestPlaceholders.leanbackRequired = false
+ 
+             minifyEnabled true
+diff --git a/android/src/main/java/com/tailscale/ipn/ui/model/Ipn.kt b/android/src/main/java/com/tailscale/ipn/ui/model/Ipn.kt
+index 38acc7f..4b7668e 100644
+--- a/android/src/main/java/com/tailscale/ipn/ui/model/Ipn.kt
++++ b/android/src/main/java/com/tailscale/ipn/ui/model/Ipn.kt
+@@ -57,6 +57,9 @@ class Ipn {
+   data class Prefs(
+       var ControlURL: String = "",
+       var RouteAll: Boolean = false,
++      var RouteLocal: Boolean = false,
++      var IgnoreInterfaces: String = "",
++      var IgnoreRoutes: String = "",
+       var AllowsSingleHosts: Boolean = false,
+       var CorpDNS: Boolean = false,
+       var WantRunning: Boolean = false,
+@@ -91,6 +94,9 @@ class Ipn {
+   data class MaskedPrefs(
+       var ControlURLSet: Boolean? = null,
+       var RouteAllSet: Boolean? = null,
++      var RouteLocalSet: Boolean? = null,
++      var IgnoreInterfacesSet: Boolean? = null,
++      var IgnoreRoutesSet: Boolean? = null,
+       var CorpDNSSet: Boolean? = null,
+       var ExitNodeIDSet: Boolean? = null,
+       var ExitNodeAllowLANAccessSet: Boolean? = null,
+@@ -114,6 +120,24 @@ class Ipn {
+         RouteAllSet = true
+       }
+ 
++    var RouteLocal: Boolean? = null
++      set(value) {
++        field = value
++        RouteLocalSet = true
++      }
++
++    var IgnoreInterfaces: String? = null
++      set(value) {
++        field = value
++        IgnoreInterfacesSet = true
++      }
++
++    var IgnoreRoutes: String? = null
++      set(value) {
++        field = value
++        IgnoreRoutesSet = true
++      }
++
+     var CorpDNS: Boolean? = null
+       set(value) {
+         field = value
+@@ -243,6 +267,9 @@ fun Ipn.MaskedPrefs.deepCopy(): Ipn.MaskedPrefs {
+   return Ipn.MaskedPrefs().also {
+     if (this.ControlURLSet == true) it.ControlURL = this.ControlURL
+     if (this.RouteAllSet == true) it.RouteAll = this.RouteAll
++    if (this.RouteLocalSet == true) it.RouteLocal = this.RouteLocal
++    if (this.IgnoreInterfacesSet == true) it.IgnoreInterfaces = this.IgnoreInterfaces
++    if (this.IgnoreRoutesSet == true) it.IgnoreRoutes = this.IgnoreRoutes
+     if (this.CorpDNSSet == true) it.CorpDNS = this.CorpDNS
+     if (this.ExitNodeIDSet == true) it.ExitNodeID = this.ExitNodeID
+     if (this.ExitNodeAllowLANAccessSet == true)
+diff --git a/android/src/main/java/com/tailscale/ipn/ui/view/MainView.kt b/android/src/main/java/com/tailscale/ipn/ui/view/MainView.kt
+index d2701e4..e2c65ac 100644
+--- a/android/src/main/java/com/tailscale/ipn/ui/view/MainView.kt
++++ b/android/src/main/java/com/tailscale/ipn/ui/view/MainView.kt
+@@ -554,6 +554,7 @@ fun PeerList(
+ ) {
+   val peerList by viewModel.peers.collectAsState(initial = emptyList<PeerSet>())
+   val searchTermStr by viewModel.searchTerm.collectAsState(initial = "")
++  val peerStatusMap by viewModel.peerStatus.collectAsState()
+   val showNoResults =
+       remember { derivedStateOf { searchTermStr.isNotEmpty() && peerList.isEmpty() } }.value
+   val netmap = viewModel.netmap.collectAsState()
+@@ -696,8 +697,23 @@ fun PeerList(
+                     }
+                   },
+                   supportingContent = {
++                    val ip = peer.Addresses?.first()?.split("/")?.first() ?: ""
++                    val ps = peerStatusMap[peer.StableID]
++                    val connInfo =
++                        if (ps != null && ps.Online) {
++                          if (!ps.CurAddr.isNullOrEmpty()) {
++                            ps.CurAddr!!
++                          } else if (!ps.Relay.isNullOrEmpty()) {
++                            "relay: ${ps.Relay}"
++                          } else {
++                            ""
++                          }
++                        } else {
++                          ""
++                        }
++                    val subtitle = if (connInfo.isNotEmpty()) "$ip  $connInfo" else ip
+                     Text(
+-                        text = peer.Addresses?.first()?.split("/")?.first() ?: "",
++                        text = subtitle,
+                         style =
+                             MaterialTheme.typography.bodyMedium.copy(
+                                 lineHeight = MaterialTheme.typography.titleMedium.lineHeight))
+diff --git a/android/src/main/java/com/tailscale/ipn/ui/view/SubnetRoutingView.kt b/android/src/main/java/com/tailscale/ipn/ui/view/SubnetRoutingView.kt
+index 4f6de17..e9c7b93 100644
+--- a/android/src/main/java/com/tailscale/ipn/ui/view/SubnetRoutingView.kt
++++ b/android/src/main/java/com/tailscale/ipn/ui/view/SubnetRoutingView.kt
+@@ -6,6 +6,8 @@ package com.tailscale.ipn.ui.view
+ import androidx.compose.foundation.clickable
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.material.icons.Icons
+@@ -14,11 +16,17 @@ import androidx.compose.material3.Card
+ import androidx.compose.material3.Icon
+ import androidx.compose.material3.IconButton
+ import androidx.compose.material3.ListItem
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.collectAsState
+ import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.platform.LocalUriHandler
+ import androidx.compose.ui.res.painterResource
+@@ -41,6 +49,11 @@ fun SubnetRoutingView(backToSettings: BackNavigation, model: SubnetRoutingViewMo
+   val isPresentingDialog by model.isPresentingDialog.collectAsState()
+   val useSubnets by model.routeAll.collectAsState()
+   val currentError by model.currentError.collectAsState()
++  val routeLocal by model.routeLocal.collectAsState()
++  val ignoreInterfaces by model.ignoreInterfaces.collectAsState()
++  val ignoreRoutes by model.ignoreRoutes.collectAsState()
++  var ignoreInterfacesText by remember { mutableStateOf(ignoreInterfaces) }
++  var ignoreRoutesText by remember { mutableStateOf(ignoreRoutes) }
+ 
+   Scaffold(
+       topBar = {
+@@ -112,6 +125,103 @@ fun SubnetRoutingView(backToSettings: BackNavigation, model: SubnetRoutingViewMo
+                   },
+                   modifier = Modifier.clickable { model.startEditingRoute("") })
+             }
++
++            item("patchDivider") { Lists.SectionDivider() }
++
++            item("patchHeader") {
++              Lists.MutedHeader(stringResource(R.string.patch_settings))
++            }
++
++            item("routeLocalToggle") {
++              Setting.Switch(
++                  R.string.override_local_subnets,
++                  isOn = routeLocal,
++                  onToggle = {
++                    LoadingIndicator.start()
++                    model.toggleRouteLocal { LoadingIndicator.stop() }
++                  })
++              ListItem(
++                  headlineContent = {
++                    Text(
++                        stringResource(R.string.override_local_subnets_subtitle),
++                        style = MaterialTheme.typography.bodySmall,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant)
++                  })
++            }
++
++            item("ignoreInterfacesInput") {
++              Lists.ItemDivider()
++              ListItem(
++                  headlineContent = {
++                    Text(
++                        stringResource(R.string.ignore_interfaces),
++                        style = MaterialTheme.typography.titleMedium)
++                  },
++                  supportingContent = {
++                    Text(
++                        stringResource(R.string.ignore_interfaces_subtitle),
++                        style = MaterialTheme.typography.bodySmall,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant)
++                  })
++              ListItem(
++                  headlineContent = {
++                    Row(
++                        horizontalArrangement = Arrangement.spacedBy(8.dp),
++                        modifier = Modifier.padding(bottom = 4.dp)) {
++                          OutlinedTextField(
++                              value = ignoreInterfacesText,
++                              onValueChange = { ignoreInterfacesText = it },
++                              singleLine = true,
++                              modifier = Modifier.weight(1f))
++                          TextButton(
++                              onClick = {
++                                LoadingIndicator.start()
++                                model.saveIgnoreInterfaces(ignoreInterfacesText) {
++                                  LoadingIndicator.stop()
++                                }
++                              }) {
++                                Text(stringResource(R.string.save))
++                              }
++                        }
++                  })
++            }
++
++            item("ignoreRoutesInput") {
++              Lists.ItemDivider()
++              ListItem(
++                  headlineContent = {
++                    Text(
++                        stringResource(R.string.ignore_routes),
++                        style = MaterialTheme.typography.titleMedium)
++                  },
++                  supportingContent = {
++                    Text(
++                        stringResource(R.string.ignore_routes_subtitle),
++                        style = MaterialTheme.typography.bodySmall,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant)
++                  })
++              ListItem(
++                  headlineContent = {
++                    Row(
++                        horizontalArrangement = Arrangement.spacedBy(8.dp),
++                        modifier = Modifier.padding(bottom = 4.dp)) {
++                          OutlinedTextField(
++                              value = ignoreRoutesText,
++                              onValueChange = { ignoreRoutesText = it },
++                              singleLine = true,
++                              modifier = Modifier.weight(1f))
++                          TextButton(
++                              onClick = {
++                                LoadingIndicator.start()
++                                model.saveIgnoreRoutes(ignoreRoutesText) {
++                                  LoadingIndicator.stop()
++                                }
++                              }) {
++                                Text(stringResource(R.string.save))
++                              }
++                        }
++                  })
++            }
+           }
+         }
+       }
+diff --git a/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt b/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt
+index c642e8f..4864d03 100644
+--- a/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt
++++ b/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt
+@@ -17,8 +17,11 @@ import androidx.lifecycle.viewModelScope
+ import com.tailscale.ipn.App
+ import com.tailscale.ipn.R
+ import com.tailscale.ipn.mdm.MDMSettings
++import com.tailscale.ipn.ui.localapi.Client
+ import com.tailscale.ipn.ui.model.Ipn
+ import com.tailscale.ipn.ui.model.Ipn.State
++import com.tailscale.ipn.ui.model.IpnState
++import com.tailscale.ipn.ui.model.StableNodeID
+ import com.tailscale.ipn.ui.model.Tailcfg
+ import com.tailscale.ipn.ui.notifier.Notifier
+ import com.tailscale.ipn.ui.util.PeerCategorizer
+@@ -87,6 +90,9 @@ class MainViewModel(private val appViewModel: AppViewModel) : IpnViewModel() {
+ 
+   val isVpnActive: StateFlow<Boolean> = appViewModel.vpnActive
+ 
++  private val _peerStatus = MutableStateFlow<Map<StableNodeID, IpnState.PeerStatus>>(emptyMap())
++  val peerStatus: StateFlow<Map<StableNodeID, IpnState.PeerStatus>> = _peerStatus
++
+   var searchJob: Job? = null
+ 
+   // Icon displayed in the button to present the health view
+@@ -100,6 +106,16 @@ class MainViewModel(private val appViewModel: AppViewModel) : IpnViewModel() {
+     expandedMenuPeer.set(null)
+   }
+ 
++  private fun refreshPeerStatus() {
++    Client(viewModelScope).status { result ->
++      result.onSuccess { status ->
++        val map = mutableMapOf<StableNodeID, IpnState.PeerStatus>()
++        status.Peer?.forEach { (_, ps) -> map[ps.ID] = ps }
++        _peerStatus.value = map
++      }
++    }
++  }
++
+   fun copyIpAddress(peer: Tailcfg.Node, clipboardManager: ClipboardManager) {
+     clipboardManager.setText(AnnotatedString(peer.primaryIPv4Address ?: ""))
+   }
+@@ -163,6 +179,7 @@ class MainViewModel(private val appViewModel: AppViewModel) : IpnViewModel() {
+             _peers.value = peerCategorizer.peerSets
+             _searchViewPeers.value = filteredPeers
+           }
++          refreshPeerStatus()
+           if (netmap.SelfNode.keyDoesNotExpire) {
+             showExpiry.set(false)
+             return@let
+@@ -180,6 +197,15 @@ class MainViewModel(private val appViewModel: AppViewModel) : IpnViewModel() {
+     viewModelScope.launch {
+       App.get().healthNotifier?.currentIcon?.collect { icon -> healthIcon.set(icon) }
+     }
++    viewModelScope.launch {
++      Notifier.state.collect { state ->
++        if (state == State.Running) {
++          refreshPeerStatus()
++        } else {
++          _peerStatus.value = emptyMap()
++        }
++      }
++    }
+   }
+ 
+   fun maybeRequestVpnPermission() {
+diff --git a/android/src/main/java/com/tailscale/ipn/ui/viewModel/SubnetRoutingViewModel.kt b/android/src/main/java/com/tailscale/ipn/ui/viewModel/SubnetRoutingViewModel.kt
+index a7b1853..ea2a4ab 100644
+--- a/android/src/main/java/com/tailscale/ipn/ui/viewModel/SubnetRoutingViewModel.kt
++++ b/android/src/main/java/com/tailscale/ipn/ui/viewModel/SubnetRoutingViewModel.kt
+@@ -63,6 +63,15 @@ class SubnetRoutingViewModel : ViewModel() {
+    */
+   val currentError: MutableStateFlow<String?> = MutableStateFlow(null)
+ 
++  /** Matches the value of the "RouteLocal" backend preference. */
++  val routeLocal: StateFlow<Boolean> = MutableStateFlow(false)
++
++  /** Matches the value of the "IgnoreInterfaces" backend preference. */
++  val ignoreInterfaces: StateFlow<String> = MutableStateFlow("")
++
++  /** Matches the value of the "IgnoreRoutes" backend preference. */
++  val ignoreRoutes: StateFlow<String> = MutableStateFlow("")
++
+   init {
+     viewModelScope.launch {
+       // Any time the value entered by the user in the add/edit dialog changes, we determine
+@@ -106,6 +115,36 @@ class SubnetRoutingViewModel : ViewModel() {
+           }
+     }
+ 
++    viewModelScope.launch {
++      Notifier.prefs
++          .map { it?.RouteLocal }
++          .distinctUntilChanged()
++          .collect {
++            Log.d(TAG, "RouteLocal changed in the backend: $it")
++            routeLocal.set(it)
++          }
++    }
++
++    viewModelScope.launch {
++      Notifier.prefs
++          .map { it?.IgnoreInterfaces }
++          .distinctUntilChanged()
++          .collect {
++            Log.d(TAG, "IgnoreInterfaces changed in the backend: $it")
++            ignoreInterfaces.set(it)
++          }
++    }
++
++    viewModelScope.launch {
++      Notifier.prefs
++          .map { it?.IgnoreRoutes }
++          .distinctUntilChanged()
++          .collect {
++            Log.d(TAG, "IgnoreRoutes changed in the backend: $it")
++            ignoreRoutes.set(it)
++          }
++    }
++
+     viewModelScope.launch {
+       routeAll.collect {
+         val prefsOut = Ipn.MaskedPrefs()
+@@ -136,6 +175,67 @@ class SubnetRoutingViewModel : ViewModel() {
+     onDone()
+   }
+ 
++  fun toggleRouteLocal(onDone: () -> Unit) {
++    val newValue = !routeLocal.value
++    routeLocal.set(newValue)
++    val prefsOut = Ipn.MaskedPrefs()
++    prefsOut.RouteLocal = newValue
++    Log.d(TAG, "Will save RouteLocal in the backend: $newValue")
++    Client(viewModelScope)
++        .editPrefs(
++            prefsOut,
++            responseHandler = { result ->
++              if (result.isFailure) {
++                Log.e(TAG, "Error saving RouteLocal: ${result.exceptionOrNull()}")
++                currentError.set(result.exceptionOrNull()?.localizedMessage)
++              } else {
++                Log.d(TAG, "RouteLocal set in backend. New value: ${result.getOrNull()?.RouteLocal}")
++                currentError.set(null)
++              }
++              onDone()
++            })
++  }
++
++  fun saveIgnoreInterfaces(value: String, onDone: () -> Unit) {
++    ignoreInterfaces.set(value)
++    val prefsOut = Ipn.MaskedPrefs()
++    prefsOut.IgnoreInterfaces = value
++    Log.d(TAG, "Will save IgnoreInterfaces in the backend: $value")
++    Client(viewModelScope)
++        .editPrefs(
++            prefsOut,
++            responseHandler = { result ->
++              if (result.isFailure) {
++                Log.e(TAG, "Error saving IgnoreInterfaces: ${result.exceptionOrNull()}")
++                currentError.set(result.exceptionOrNull()?.localizedMessage)
++              } else {
++                Log.d(TAG, "IgnoreInterfaces set in backend.")
++                currentError.set(null)
++              }
++              onDone()
++            })
++  }
++
++  fun saveIgnoreRoutes(value: String, onDone: () -> Unit) {
++    ignoreRoutes.set(value)
++    val prefsOut = Ipn.MaskedPrefs()
++    prefsOut.IgnoreRoutes = value
++    Log.d(TAG, "Will save IgnoreRoutes in the backend: $value")
++    Client(viewModelScope)
++        .editPrefs(
++            prefsOut,
++            responseHandler = { result ->
++              if (result.isFailure) {
++                Log.e(TAG, "Error saving IgnoreRoutes: ${result.exceptionOrNull()}")
++                currentError.set(result.exceptionOrNull()?.localizedMessage)
++              } else {
++                Log.d(TAG, "IgnoreRoutes set in backend.")
++                currentError.set(null)
++              }
++              onDone()
++            })
++  }
++
+   /**
+    * Deletes the given subnet route from the list of advertised routes. Calling this function will
+    * cause the backend preferences to be updated in the background.
+diff --git a/android/src/main/res/values/strings.xml b/android/src/main/res/values/strings.xml
+index f8f852a..4a1f94c 100644
+--- a/android/src/main/res/values/strings.xml
++++ b/android/src/main/res/values/strings.xml
+@@ -372,4 +372,17 @@
+     <string name="enable_hardware_attestation">Enable hardware attestation</string>
+     <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Use hardware-backed keys to bind node identity to the device</string>
+ 
++    <!-- Strings for Patch Settings -->
++    <string name="patch_settings">Patch settings</string>
++    <string name="patch_settings_subtitle">Custom route and interface options</string>
++    <string name="override_local_subnets">Override local subnets</string>
++    <string name="override_local_subnets_subtitle">Accept routes from other nodes even if they overlap with local machine addresses</string>
++    <string name="ignore_interfaces">Ignore interfaces</string>
++    <string name="ignore_interfaces_subtitle">Comma-separated interface name prefixes to ignore (e.g. docker0,br-,veth)</string>
++    <string name="ignore_routes">Ignore routes</string>
++    <string name="ignore_routes_subtitle">Comma-separated CIDR routes to ignore from other nodes (e.g. 10.0.0.0/8,192.168.1.0/24)</string>
++    <string name="save">Save</string>
++    <string name="peer_connection_via_relay">via %s</string>
++    <string name="peer_connection_direct">direct %s</string>
++
+ </resources>
 diff --git a/go.mod b/go.mod
-index 575377e..1436033 100644
+index ac6be7a..778eede 100644
 --- a/go.mod
 +++ b/go.mod
-@@ -2,6 +2,10 @@ module github.com/tailscale/tailscale-android
- 
- go 1.20
- 
-+replace github.com/tailscale/wireguard-go => ../wireguard-go
+@@ -87,3 +87,5 @@ require (
+ 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
+ 	gvisor.dev/gvisor v0.0.0-20250205023644-9414b50a5633 // indirect
+ )
 +
 +replace tailscale.com => ../tailscale
-+
- require (
- 	eliasnaur.com/font v0.0.0-20220124212145-832bb8fc08c3
- 	gioui.org v0.0.0-20230206180804-32c6a9b10d0b

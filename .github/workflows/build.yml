@@ -77,5 +77,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tailscale-android-patched
-          path: tailscale-android/*.apk
+          path: "*.apk"
           retention-days: 30

@@ -20,14 +20,16 @@ if (!(await fs.exists('./tailscale-android'))) {
     echo`>> TailScale-android found. Skipping clone...`;
 }
 
+echo`>> Patching tailscale...`;
 await cd('./tailscale');
 await $`git reset --hard`;
 await $`git apply ../patches/tailscale.patch`;
 
-// await cd('../tailscale-android');
-// await $`git reset --hard 8d6922285da6c8f95593132f9909f6e6eeedd4d8`;
-// await $`git apply ../patches/tailscale-android.patch`;
+echo`>> Patching tailscale-android...`;
+await cd('../tailscale-android');
+await $`git reset --hard`;
+await $`git apply ../patches/tailscale-android.patch`;
 
-// echo`>> Running go mod tidy for tailscale-android...`;
-// await cd('../tailscale-android');
-// await $`go mod tidy`;
+echo`>> Adding go.mod replace for tailscale-android...`;
+// Add replace directive so tailscale-android uses the patched tailscale
+await $`go mod edit -replace=tailscale.com=../tailscale`;
