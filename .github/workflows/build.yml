@@ -32,6 +32,10 @@ jobs:
         run: pnpm i --no-frozen-lockfile
       - name: Pre-Patch
         run: pnpm patch-pre
+      - name: Tidy Go modules for Android build
+        if: matrix.platform == 'android'
+        working-directory: tailscale-android
+        run: ./tool/go mod tidy
       - name: Build windows x86_64
         if: matrix.platform == 'windows'
         run: pnpm build -- --windows
