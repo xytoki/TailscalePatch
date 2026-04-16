@@ -6,6 +6,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     name: Build
+    env:
+      GIT_COMMITTER_NAME: github-actions
+      GIT_COMMITTER_EMAIL: github-actions@github.com
     strategy:
       fail-fast: false
       matrix:
