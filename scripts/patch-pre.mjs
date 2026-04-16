@@ -20,8 +20,9 @@ if (!(await fs.exists('./tailscale-android'))) {
     echo`>> TailScale-android found. Skipping clone...`;
 }
 
-const tailscalePatches = (await glob('./patches/tailscale/*.patch')).sort();
-const tailscaleAndroidPatches = (await glob('./patches/tailscale-android/*.patch')).sort();
+const repoRoot = process.cwd();
+const tailscalePatches = (await glob('./patches/tailscale/*.patch')).sort().map((patchFile) => path.resolve(repoRoot, patchFile));
+const tailscaleAndroidPatches = (await glob('./patches/tailscale-android/*.patch')).sort().map((patchFile) => path.resolve(repoRoot, patchFile));
 
 if (tailscalePatches.length === 0) {
     throw new Error('No tailscale patch files found in ./patches/tailscale');
