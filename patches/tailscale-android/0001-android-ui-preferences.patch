@@ -1,67 +1,17 @@
-diff --git a/Makefile b/Makefile
-index b7e969a..db3a95f 100644
---- a/Makefile
-+++ b/Makefile
-@@ -14,6 +14,7 @@ DOCKER_IMAGE := tailscale-android-build-amd64-041425-1
- export TS_USE_TOOLCHAIN=1
- 
- DEBUG_APK := tailscale-debug.apk
-+RELEASE_APK := tailscale-release.apk
- RELEASE_AAB := tailscale-release.aab
- RELEASE_TV_AAB := tailscale-tv-release.aab
- 
-@@ -123,6 +124,14 @@ $(DEBUG_APK): libtailscale debug-symbols version gradle-dependencies build-unstr
- 	(cd android && ./gradlew test assembleDebug)
- 	install -C android/build/outputs/apk/debug/android-debug.apk $@
- 
-+# Builds the release APK signed with debug keystore
-+.PHONY: tailscale-release-apk
-+tailscale-release-apk: $(RELEASE_APK)
-+
-+$(RELEASE_APK): libtailscale debug-symbols version gradle-dependencies build-unstripped-aar
-+	(cd android && ./gradlew test assembleRelease)
-+	install -C android/build/outputs/apk/release/android-release.apk $@
-+
- # Builds the release AAB and signs it (phone/tablet/chromeOS variant)
- .PHONY: release
- release: jarsign-env $(RELEASE_AAB)
-@@ -376,7 +385,7 @@ docker-remove-shell-image: ## Removes all docker shell image
- .PHONY: clean
- clean: ## Remove build artifacts. Does not purge docker build envs. Use dockerRemoveEnv for that.
- 	@echo "Cleaning up old build artifacts"
--	-rm -rf android/build $(DEBUG_APK) $(RELEASE_AAB) $(RELEASE_TV_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
-+	-rm -rf android/build $(DEBUG_APK) $(RELEASE_APK) $(RELEASE_AAB) $(RELEASE_TV_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
- 	@echo "Cleaning cached toolchain"
- 	-rm -rf $(HOME)/.cache/tailscale-go{,.extracted}
- 	-pkill -f gradle
-diff --git a/android/build.gradle b/android/build.gradle
-index 8f64b3d..2c5b819 100644
---- a/android/build.gradle
-+++ b/android/build.gradle
-@@ -76,6 +76,15 @@ android {
-     flavorDimensions "version"
-     namespace 'com.tailscale.ipn'
- 
-+    signingConfigs {
-+        release {
-+            storeFile android.signingConfigs.debug.storeFile
-+            storePassword android.signingConfigs.debug.storePassword
-+            keyAlias android.signingConfigs.debug.keyAlias
-+            keyPassword android.signingConfigs.debug.keyPassword
-+        }
-+    }
-+
-     buildTypes {
-         applicationTest {
-             initWith debug
-@@ -88,6 +97,7 @@ android {
-             manifestPlaceholders.leanbackRequired = false
-         }
-         release {
-+            signingConfig signingConfigs.release
-             manifestPlaceholders.leanbackRequired = false
- 
-             minifyEnabled true
+From 3f20187a1b5c09a1639318bea29ced3e1279a081 Mon Sep 17 00:00:00 2001
+From: Hephaestus <hephaestus@local>
+Date: Thu, 16 Apr 2026 12:27:01 +0000
+Subject: [PATCH 1/2] android ui preferences
+
+---
+ .../java/com/tailscale/ipn/ui/model/Ipn.kt    |  27 +++++
+ .../com/tailscale/ipn/ui/view/MainView.kt     |  18 ++-
+ .../ipn/ui/view/SubnetRoutingView.kt          | 110 ++++++++++++++++++
+ .../ipn/ui/viewModel/MainViewModel.kt         |  26 +++++
+ .../ui/viewModel/SubnetRoutingViewModel.kt    | 100 ++++++++++++++++
+ android/src/main/res/values/strings.xml       |  13 +++
+ 6 files changed, 293 insertions(+), 1 deletion(-)
+
 diff --git a/android/src/main/java/com/tailscale/ipn/ui/model/Ipn.kt b/android/src/main/java/com/tailscale/ipn/ui/model/Ipn.kt
 index 38acc7f..4b7668e 100644
 --- a/android/src/main/java/com/tailscale/ipn/ui/model/Ipn.kt
@@ -306,7 +256,7 @@ index 4f6de17..e9c7b93 100644
          }
        }
 diff --git a/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt b/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt
-index c642e8f..4864d03 100644
+index 04bf0e4..0aeaf25 100644
 --- a/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt
 +++ b/android/src/main/java/com/tailscale/ipn/ui/viewModel/MainViewModel.kt
 @@ -17,8 +17,11 @@ import androidx.lifecycle.viewModelScope
@@ -519,13 +469,6 @@ index f8f852a..4a1f94c 100644
 +    <string name="peer_connection_direct">direct %s</string>
 +
  </resources>
-diff --git a/go.mod b/go.mod
-index ac6be7a..778eede 100644
---- a/go.mod
-+++ b/go.mod
-@@ -87,3 +87,5 @@ require (
- 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
- 	gvisor.dev/gvisor v0.0.0-20250205023644-9414b50a5633 // indirect
- )
-+
-+replace tailscale.com => ../tailscale
+-- 
+2.34.1
+

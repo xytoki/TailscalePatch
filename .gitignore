@@ -1,5 +1,6 @@
-tailscale/
-tailscale-android/
-wireguard-go/
-node_modules/
-dist/
+/tailscale/
+/tailscale-android/
+/wireguard-go/
+/node_modules/
+/dist/
+/.cache/

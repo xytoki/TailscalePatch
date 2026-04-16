@@ -20,15 +20,31 @@ if (!(await fs.exists('./tailscale-android'))) {
     echo`>> TailScale-android found. Skipping clone...`;
 }
 
+const tailscalePatches = (await glob('./patches/tailscale/*.patch')).sort();
+const tailscaleAndroidPatches = (await glob('./patches/tailscale-android/*.patch')).sort();
+
+if (tailscalePatches.length === 0) {
+    throw new Error('No tailscale patch files found in ./patches/tailscale');
+}
+if (tailscaleAndroidPatches.length === 0) {
+    throw new Error('No tailscale-android patch files found in ./patches/tailscale-android');
+}
+
 echo`>> Patching tailscale...`;
 await cd('./tailscale');
+if (await fs.exists('.git/rebase-apply')) {
+    await $`git am --abort`;
+}
 await $`git reset --hard`;
-await $`git apply --3way ../patches/tailscale.patch`;
+await $`git am --3way ${tailscalePatches}`;
 
 echo`>> Patching tailscale-android...`;
 await cd('../tailscale-android');
+if (await fs.exists('.git/rebase-apply')) {
+    await $`git am --abort`;
+}
 await $`git reset --hard`;
-await $`git apply --3way ../patches/tailscale-android.patch`;
+await $`git am --3way ${tailscaleAndroidPatches}`;
 
 echo`>> Adding go.mod replace for tailscale-android...`;
 // Add replace directive so tailscale-android uses the patched tailscale

@@ -1,0 +1,88 @@
+From 4a0893c67c690ec339447d6d33390273332dacd2 Mon Sep 17 00:00:00 2001
+From: Hephaestus <hephaestus@local>
+Date: Thu, 16 Apr 2026 12:27:01 +0000
+Subject: [PATCH 2/2] android build integration
+
+---
+ Makefile             | 11 ++++++++++-
+ android/build.gradle | 10 ++++++++++
+ go.mod               |  2 ++
+ 3 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 2fe9391..a9b5804 100644
+--- a/Makefile
++++ b/Makefile
+@@ -14,6 +14,7 @@ DOCKER_IMAGE := tailscale-android-build-amd64-041425-1
+ export TS_USE_TOOLCHAIN=1
+ 
+ DEBUG_APK := tailscale-debug.apk
++RELEASE_APK := tailscale-release.apk
+ RELEASE_AAB := tailscale-release.aab
+ RELEASE_TV_AAB := tailscale-tv-release.aab
+ 
+@@ -123,6 +124,14 @@ $(DEBUG_APK): libtailscale debug-symbols version gradle-dependencies build-unstr
+ 	(cd android && ./gradlew test assembleDebug)
+ 	install -C android/build/outputs/apk/debug/android-debug.apk $@
+ 
++# Builds the release APK signed with debug keystore
++.PHONY: tailscale-release-apk
++tailscale-release-apk: $(RELEASE_APK)
++
++$(RELEASE_APK): libtailscale debug-symbols version gradle-dependencies build-unstripped-aar
++	(cd android && ./gradlew test assembleRelease)
++	install -C android/build/outputs/apk/release/android-release.apk $@
++
+ # Builds the release AAB and signs it (phone/tablet/chromeOS variant)
+ .PHONY: release
+ release: jarsign-env $(RELEASE_AAB)
+@@ -380,7 +389,7 @@ docker-remove-shell-image: ## Removes all docker shell image
+ .PHONY: clean
+ clean: ## Remove build artifacts. Does not purge docker build envs. Use dockerRemoveEnv for that.
+ 	@echo "Cleaning up old build artifacts"
+-	-rm -rf android/build $(DEBUG_APK) $(RELEASE_AAB) $(RELEASE_TV_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
++	-rm -rf android/build $(DEBUG_APK) $(RELEASE_APK) $(RELEASE_AAB) $(RELEASE_TV_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
+ 	@echo "Cleaning cached toolchain"
+ 	-rm -rf $(HOME)/.cache/tailscale-go{,.extracted}
+ 	-pkill -f gradle
+diff --git a/android/build.gradle b/android/build.gradle
+index 8f64b3d..2c5b819 100644
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -76,6 +76,15 @@ android {
+     flavorDimensions "version"
+     namespace 'com.tailscale.ipn'
+ 
++    signingConfigs {
++        release {
++            storeFile android.signingConfigs.debug.storeFile
++            storePassword android.signingConfigs.debug.storePassword
++            keyAlias android.signingConfigs.debug.keyAlias
++            keyPassword android.signingConfigs.debug.keyPassword
++        }
++    }
++
+     buildTypes {
+         applicationTest {
+             initWith debug
+@@ -88,6 +97,7 @@ android {
+             manifestPlaceholders.leanbackRequired = false
+         }
+         release {
++            signingConfig signingConfigs.release
+             manifestPlaceholders.leanbackRequired = false
+ 
+             minifyEnabled true
+diff --git a/go.mod b/go.mod
+index fdbd7bf..7ca29e8 100644
+--- a/go.mod
++++ b/go.mod
+@@ -87,3 +87,5 @@ require (
+ 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
+ 	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8 // indirect
+ )
++
++replace tailscale.com => ../tailscale
+-- 
+2.34.1
+
