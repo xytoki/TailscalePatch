@@ -1,0 +1,1376 @@
+diff --git a/net/tstun/mtu.go b/net/tstun/mtu.go
+index 6eceb6833b964bf7af356b8b3ae30b32a5feac6b..ee08abbba2894d025b7391d48d27a32c18415cc3 100644
+--- a/net/tstun/mtu.go
++++ b/net/tstun/mtu.go
+@@ -106,6 +106,18 @@
+ // - 16-byte authentication tag
+ const wgHeaderLen = 40 + 8 + 4 + 4 + 8 + 16
+ 
++// DisguiseHeaderLen is the additional overhead added by the SD-WAN disguise
++// encapsulation layer on top of the WireGuard packet. When disguise mode is
++// active, each WireGuard UDP payload is wrapped with:
++//
++// - 8-byte SD-WAN protocol header (type, encrypt, sid, token)
++// - 20-byte fake inner IPv4 header
++// - 8-byte fake inner UDP header
++//
++// This makes the inner payload look like a tunneled IP+UDP flow to DPI
++// inspection. The total additional overhead is 36 bytes.
++const DisguiseHeaderLen = 8 + 20 + 8
++
+ // TUNToWireMTU takes the MTU that the Tailscale TUN presents to the user and
+ // returns the on-the-wire MTU necessary to transmit the largest packet that
+ // will fit through the TUN, given that we have to add wireguard headers.
+@@ -123,6 +135,27 @@ func WireToTUNMTU(w WireMTU) TUNMTU {
+ 	return TUNMTU(w - wgHeaderLen)
+ }
+ 
++// TUNToWireMTUDisguised is like TUNToWireMTU but includes the additional
++// overhead from SD-WAN disguise encapsulation.
++func TUNToWireMTUDisguised(t TUNMTU) WireMTU {
++	return WireMTU(t + wgHeaderLen + DisguiseHeaderLen)
++}
++
++// WireToTUNMTUDisguised is like WireToTUNMTU but accounts for the additional
++// overhead from SD-WAN disguise encapsulation.
++func WireToTUNMTUDisguised(w WireMTU) TUNMTU {
++	if w < wgHeaderLen+DisguiseHeaderLen {
++		return 0
++	}
++	return TUNMTU(w - wgHeaderLen - DisguiseHeaderLen)
++}
++
++// SafeWireMTUDisguised returns the wire MTU that is safe to use when
++// SD-WAN disguise mode is active.
++func SafeWireMTUDisguised() WireMTU {
++	return TUNToWireMTUDisguised(safeTUNMTU)
++}
++
+ // DefaultTUNMTU returns the MTU we use to set the Tailscale TUN
+ // MTU. It is also the path MTU that we default to if we have no
+ // information about the path to a peer.
+@@ -148,6 +181,16 @@ func DefaultTUNMTU() TUNMTU {
+ 	return safeTUNMTU
+ }
+ 
++// DefaultTUNMTUForDisguise returns the default TUN MTU when SD-WAN disguise
++// mode is active. It subtracts the disguise overhead from the standard safe MTU.
++func DefaultTUNMTUForDisguise() TUNMTU {
++	base := DefaultTUNMTU()
++	if base <= TUNMTU(DisguiseHeaderLen) {
++		return 0
++	}
++	return base - TUNMTU(DisguiseHeaderLen)
++}
++
+ // SafeWireMTU returns the wire MTU that is safe to use if we have no
+ // information about the path MTU to this peer.
+ func SafeWireMTU() WireMTU {
+diff --git a/tailcfg/tailcfg.go b/tailcfg/tailcfg.go
+index c704a62484620c948ac61d746182d445fc903e43..c25782cbf9eb79f79c19a0c9f50ca8a962c565da 100644
+--- a/tailcfg/tailcfg.go
++++ b/tailcfg/tailcfg.go
+@@ -1577,6 +1577,10 @@ type CapGrant struct {
+ 	// relay endpoints to the peer which has this capability.
+ 	PeerCapabilityRelayTarget PeerCapability = "tailscale.com/cap/relay-target"
+ 
++	// PeerCapabilitySDWANEncap controls whether traffic sent from a source node
++	// to a destination node should use SD-WAN encapsulation.
++	PeerCapabilitySDWANEncap PeerCapability = "tailscale.com/cap/sdwan-encap"
++
+ 	// PeerCapabilityTsIDP grants a peer tsidp-specific
+ 	// capabilities, such as the ability to add user groups to the OIDC
+ 	// claim
+diff --git a/wgengine/magicsock/endpoint.go b/wgengine/magicsock/endpoint.go
+index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2ff881989 100644
+--- a/wgengine/magicsock/endpoint.go
++++ b/wgengine/magicsock/endpoint.go
+@@ -39,6 +39,8 @@
+ 
+ var mtuProbePingSizesV4 []int
+ var mtuProbePingSizesV6 []int
++var mtuProbePingSizesV4Disguised []int
++var mtuProbePingSizesV6Disguised []int
+ 
+ // discoKeyAdvertisementInterval tells how often a disco update via TSMP can
+ // happen. The update is triggered via enqueueCallMeMaybe, and thus it will
+@@ -47,8 +49,10 @@
+ 
+ func init() {
+ 	for _, m := range tstun.WireMTUsToProbe {
+-		mtuProbePingSizesV4 = append(mtuProbePingSizesV4, pktLenToPingSize(m, false))
+-		mtuProbePingSizesV6 = append(mtuProbePingSizesV6, pktLenToPingSize(m, true))
++		mtuProbePingSizesV4 = append(mtuProbePingSizesV4, pktLenToPingSize(m, false, false))
++		mtuProbePingSizesV6 = append(mtuProbePingSizesV6, pktLenToPingSize(m, true, false))
++		mtuProbePingSizesV4Disguised = append(mtuProbePingSizesV4Disguised, pktLenToPingSize(m, false, true))
++		mtuProbePingSizesV6Disguised = append(mtuProbePingSizesV6Disguised, pktLenToPingSize(m, true, true))
+ 	}
+ }
+ 
+@@ -104,6 +108,8 @@ type endpoint struct {
+ 	expired         bool // whether the node has expired
+ 	isWireguardOnly bool // whether the endpoint is WireGuard only
+ 	relayCapable    bool // whether the node is capable of speaking via a [tailscale.com/net/udprelay.Server]
++	sendDisguised   bool
++	disguiseSession sdwanSession
+ }
+ 
+ // udpRelayEndpointReady determines whether the given relay [addrQuality] should
+@@ -371,12 +377,13 @@ type endpointDisco struct {
+ }
+ 
+ type sentPing struct {
+-	to      epAddr
+-	at      mono.Time
+-	timer   *time.Timer // timeout timer
+-	purpose discoPingPurpose
+-	size    int                    // size of the disco message
+-	resCB   *pingResultAndCallback // or nil for internal use
++	to        epAddr
++	at        mono.Time
++	timer     *time.Timer // timeout timer
++	purpose   discoPingPurpose
++	size      int // size of the disco message
++	disguised bool
++	resCB     *pingResultAndCallback // or nil for internal use
+ }
+ 
+ // endpointState is some state and history for a specific endpoint of
+@@ -618,7 +625,7 @@ func (de *endpoint) addrForWireGuardSendLocked(now mono.Time) (udpAddr epAddr, s
+ 
+ 		if latency, ok := state.latencyLocked(); ok {
+ 			if latency < lowestLatency || latency == lowestLatency && ipp.Addr().Is6() {
+-				// If we have the same latency,IPv6 is prioritized.
++				// If we have the same latency, IPv6 is prioritized.
+ 				// TODO(catzkorn): Consider a small increase in latency to use
+ 				// IPv6 in comparison to IPv4, when possible.
+ 				lowestLatency = latency
+@@ -651,7 +658,7 @@ func (de *endpoint) addrForWireGuardSendLocked(now mono.Time) (udpAddr epAddr, s
+ // the next ping. It will only return addrs with a large enough path MTU to
+ // permit a ping payload of size bytes to be delivered (DERP is always one such
+ // addr as it is a TCP connection). If it returns a zero-value udpAddr, then we
+-// should continue probing the MTU of all paths to this endpoint. Zero, one, or
++// should continue probing the MTU of all addresses to this endpoint. Zero, one, or
+ // both of the returned UDP address and DERP address may be non-zero.
+ //
+ // de.mu must be held.
+@@ -663,7 +670,7 @@ func (de *endpoint) addrForPingSizeLocked(now mono.Time, size int) (udpAddr epAd
+ 
+ 	udpAddr = de.bestAddr.epAddr
+ 	pathMTU := de.bestAddr.wireMTU
+-	requestedMTU := pingSizeToPktLen(size, udpAddr)
++	requestedMTU := pingSizeToPktLen(size, udpAddr, false)
+ 	mtuOk := requestedMTU <= pathMTU
+ 
+ 	if udpAddr.ap.IsValid() && mtuOk {
+@@ -1049,6 +1056,7 @@ func (de *endpoint) send(buffs [][]byte, offset int) error {
+ 
+ 	now := mono.Now()
+ 	udpAddr, derpAddr, startWGPing := de.addrForSendLocked(now)
++	useDisguise := !udpAddr.vni.IsSet() && de.disguiseEnabledLocked()
+ 
+ 	if de.isWireguardOnly {
+ 		if startWGPing {
+@@ -1077,7 +1085,11 @@ func (de *endpoint) send(buffs [][]byte, offset int) error {
+ 	}
+ 	var err error
+ 	if udpAddr.ap.IsValid() {
+-		_, err = de.c.sendUDPBatch(udpAddr, buffs, offset)
++		if useDisguise {
++			_, err = de.c.sendDisguisedUDPBatch(udpAddr, de.publicKey, buffs, offset)
++		} else {
++			_, err = de.c.sendUDPBatch(udpAddr, buffs, offset)
++		}
+ 
+ 		// If the error is known to indicate that the endpoint is no longer
+ 		// usable, clear the endpoint statistics so that the next send will
+@@ -1089,6 +1101,9 @@ func (de *endpoint) send(buffs [][]byte, offset int) error {
+ 		var txBytes int
+ 		for _, b := range buffs {
+ 			txBytes += len(b[offset:])
++			if useDisguise {
++				txBytes += tstun.DisguiseHeaderLen
++			}
+ 		}
+ 
+ 		switch {
+@@ -1256,8 +1271,13 @@ func (de *endpoint) sendDiscoPing(ep epAddr, discoKey key.DiscoPublic, txid stun
+ 	}
+ 
+ 	if size != 0 {
+-		metricSentDiscoPeerMTUProbes.Add(1)
+-		metricSentDiscoPeerMTUProbeBytes.Add(int64(pingSizeToPktLen(size, ep)))
++		de.mu.Lock()
++		sp, ok := de.sentPing[txid]
++		de.mu.Unlock()
++		if ok {
++			metricSentDiscoPeerMTUProbes.Add(1)
++			metricSentDiscoPeerMTUProbeBytes.Add(int64(pingSizeToPktLen(size, ep, sp.disguised)))
++		}
+ 	}
+ }
+ 
+@@ -1317,13 +1337,20 @@ func (de *endpoint) startDiscoPingLocked(ep epAddr, now mono.Time, purpose disco
+ 
+ 	// Default to sending a single ping of the specified size
+ 	sizes := []int{size}
++	useDisguise := de.disguiseEnabledLocked()
+ 	if de.c.PeerMTUEnabled() {
+ 		isDerp := ep.ap.Addr() == tailcfg.DerpMagicIPAddr
+ 		if !isDerp && ((purpose == pingDiscovery) || (purpose == pingCLI && size == 0)) {
+ 			de.c.dlogf("[v1] magicsock: starting MTU probe")
+ 			sizes = mtuProbePingSizesV4
++			if useDisguise {
++				sizes = mtuProbePingSizesV4Disguised
++			}
+ 			if ep.ap.Addr().Is6() {
+ 				sizes = mtuProbePingSizesV6
++				if useDisguise {
++					sizes = mtuProbePingSizesV6Disguised
++				}
+ 			}
+ 		}
+ 	}
+@@ -1339,12 +1366,13 @@ func (de *endpoint) startDiscoPingLocked(ep epAddr, now mono.Time, purpose disco
+ 	for _, s := range sizes {
+ 		txid := stun.NewTxID()
+ 		de.sentPing[txid] = sentPing{
+-			to:      ep,
+-			at:      now,
+-			timer:   time.AfterFunc(pingTimeoutDuration, func() { de.discoPingTimeout(txid) }),
+-			purpose: purpose,
+-			resCB:   resCB,
+-			size:    s,
++			to:        ep,
++			at:        now,
++			timer:     time.AfterFunc(pingTimeoutDuration, func() { de.discoPingTimeout(txid) }),
++			purpose:   purpose,
++			resCB:     resCB,
++			size:      s,
++			disguised: useDisguise,
+ 		}
+ 		if purpose == pingHeartbeatForUDPLifetime && de.probeUDPLifetime != nil {
+ 			de.probeUDPLifetime.lastTxID = txid
+@@ -1540,6 +1568,19 @@ func (de *endpoint) updateFromNode(n tailcfg.NodeView, heartbeatDisabled bool, p
+ 	de.setEndpointsLocked(n.Endpoints())
+ 
+ 	de.relayCapable = capVerIsRelayCapable(n.Cap())
++	de.sendDisguised = nodeUsesSDWAN(nil, de.c.filt, de.c.self, n)
++}
++
++func (de *endpoint) refreshDisguiseLocked(self key.NodePublic) {
++	if self.IsZero() {
++		de.disguiseSession = sdwanSession{}
++		return
++	}
++	de.disguiseSession = deriveSDWANSession(self, de.publicKey)
++}
++
++func (de *endpoint) disguiseEnabledLocked() bool {
++	return de.sendDisguised && de.disguiseSession.valid()
+ }
+ 
+ func (de *endpoint) setEndpointsLocked(eps interface {
+@@ -1671,8 +1712,12 @@ func (de *endpoint) noteConnectivityChange() {
+ // a disco ping message of length size to reach its target at
+ // udpAddr. size is the length of the entire disco message including
+ // disco headers. If size is zero, assume it is the safe wire MTU.
+-func pingSizeToPktLen(size int, udpAddr epAddr) tstun.WireMTU {
++// If disguised is true, the SD-WAN disguise encapsulation overhead is included.
++func pingSizeToPktLen(size int, udpAddr epAddr, disguised bool) tstun.WireMTU {
+ 	if size == 0 {
++		if disguised {
++			return tstun.SafeWireMTUDisguised()
++		}
+ 		return tstun.SafeWireMTU()
+ 	}
+ 	headerLen := ipv4.HeaderLen
+@@ -1683,6 +1728,9 @@ func pingSizeToPktLen(size int, udpAddr epAddr) tstun.WireMTU {
+ 	if udpAddr.vni.IsSet() {
+ 		headerLen += packet.GeneveFixedHeaderLength
+ 	}
++	if disguised {
++		headerLen += tstun.DisguiseHeaderLen
++	}
+ 	return tstun.WireMTU(size + headerLen)
+ }
+ 
+@@ -1690,7 +1738,8 @@ func pingSizeToPktLen(size int, udpAddr epAddr) tstun.WireMTU {
+ // create a disco ping message whose on-the-wire length is exactly mtu
+ // bytes long. If mtu is zero or less than the minimum ping size, then
+ // no MTU probe is desired and return zero for an unpadded ping.
+-func pktLenToPingSize(mtu tstun.WireMTU, is6 bool) int {
++// If disguised is true, the SD-WAN disguise encapsulation overhead is included.
++func pktLenToPingSize(mtu tstun.WireMTU, is6 bool, disguised bool) int {
+ 	if mtu == 0 {
+ 		return 0
+ 	}
+@@ -1699,6 +1748,9 @@ func pktLenToPingSize(mtu tstun.WireMTU, is6 bool) int {
+ 		headerLen = ipv6.HeaderLen
+ 	}
+ 	headerLen += 8 // UDP header length
++	if disguised {
++		headerLen += tstun.DisguiseHeaderLen
++	}
+ 	if mtu < tstun.WireMTU(headerLen) {
+ 		return 0
+ 	}
+@@ -1723,7 +1775,7 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src epAdd
+ 	knownTxID = true // for naked returns below
+ 	de.removeSentDiscoPingLocked(m.TxID, sp, discoPongReceived)
+ 
+-	pktLen := int(pingSizeToPktLen(sp.size, src))
++	pktLen := int(pingSizeToPktLen(sp.size, src, sp.disguised))
+ 	if sp.size != 0 {
+ 		m := getPeerMTUsProbedMetric(tstun.WireMTU(pktLen))
+ 		m.Add(1)
+@@ -1776,7 +1828,7 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src epAdd
+ 		thisPong := addrQuality{
+ 			epAddr:  sp.to,
+ 			latency: latency,
+-			wireMTU: pingSizeToPktLen(sp.size, sp.to),
++			wireMTU: pingSizeToPktLen(sp.size, sp.to, sp.disguised),
+ 		}
+ 		// TODO(jwhited): consider checking de.trustBestAddrUntil as well. If
+ 		//  de.bestAddr is untrusted we may want to clear it, otherwise we could
+diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
+index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f10c629be 100644
+--- a/wgengine/magicsock/magicsock.go
++++ b/wgengine/magicsock/magicsock.go
+@@ -9,8 +9,10 @@
+ 	"bufio"
+ 	"bytes"
+ 	"context"
++	"crypto/md5"
+ 	"crypto/x509"
+ 	"encoding/binary"
++	"encoding/hex"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -78,13 +80,20 @@
+ 	// BPF filters need the magic in this format to match on it. Used
+ 	// only in magicsock_linux.go, but defined here so that the test
+ 	// which verifies this is the correct magic doesn't also need a
+-	// _linux variant.
++	// build tag.
+ 	discoMagic1 = 0x5453f09f
+ 	discoMagic2 = 0x92ac
+ 
+-	// UDP socket read/write buffer size (7MB). The value of 7MB is chosen as it
+-	// is the max supported by a default configuration of macOS. Some platforms
+-	// will silently clamp the value.
++	sdwanPacketType    = 0x18
++	sdwanEncryptFlag   = 0x01
++	sdwanHeaderLen     = 8
++	sdwanInnerIPv4Len  = 20
++	sdwanInnerUDPLen   = 8
++	sdwanPayloadOffset = sdwanHeaderLen + sdwanInnerIPv4Len + sdwanInnerUDPLen
++	sdwanMinPacketLen  = sdwanPayloadOffset + 1
++	sdwanModeOn        = "on"
++	sdwanModeOff       = "off"
++
+ 	socketBufferSize = 7 << 20
+ )
+ 
+@@ -338,6 +347,9 @@ type Conn struct {
+ 	// peerMap tracks the networkmap Node entity for each peer
+ 	// by node key, node ID, and discovery key.
+ 	peerMap peerMap
++	// sdwanPeersBySession indexes disguise sessions to peers for O(1)-ish
++	// receive-side lookups of disguised WireGuard packets.
++	sdwanPeersBySession map[sdwanSessionIndexKey][]*endpoint
+ 
+ 	// relayManager manages allocation and handshaking of
+ 	// [tailscale.com/net/udprelay.Server] endpoints.
+@@ -393,6 +405,7 @@ type Conn struct {
+ 
+ 	// getPeerByKey optionally specifies a function to look up a peer's
+ 	// wireguard state by its public key. If nil, it's not used.
++	// In regular use, this will be wgengine.(*userspaceEngine).PeerByKey.
+ 	getPeerByKey func(key.NodePublic) (_ wgint.Peer, ok bool)
+ 
+ 	// lastErrRebind tracks the last time a rebind was performed after
+@@ -574,13 +587,14 @@ type UDPRelayAllocResp struct {
+ func newConn(logf logger.Logf) *Conn {
+ 	discoPrivate := key.NewDisco()
+ 	c := &Conn{
+-		logf:         logf,
+-		derpRecvCh:   make(chan derpReadResult, 1), // must be buffered, see issue 3736
+-		derpStarted:  make(chan struct{}),
+-		peerLastDerp: make(map[key.NodePublic]int),
+-		peerMap:      newPeerMap(),
+-		discoInfo:    make(map[key.DiscoPublic]*discoInfo),
+-		cloudInfo:    cloudinfo.New(logf),
++		logf:                logf,
++		derpRecvCh:          make(chan derpReadResult, 1), // must be buffered, see issue 3736
++		derpStarted:         make(chan struct{}),
++		peerLastDerp:        make(map[key.NodePublic]int),
++		peerMap:             newPeerMap(),
++		sdwanPeersBySession: make(map[sdwanSessionIndexKey][]*endpoint),
++		discoInfo:           make(map[key.DiscoPublic]*discoInfo),
++		cloudInfo:           cloudinfo.New(logf),
+ 	}
+ 	c.discoAtomic.Set(discoPrivate)
+ 	c.bind = &connBind{Conn: c, closed: true}
+@@ -1521,6 +1535,282 @@ func (c *Conn) sendUDPBatch(addr epAddr, buffs [][]byte, offset int) (sent bool,
+ 	return err == nil, err
+ }
+ 
++func (c *Conn) sendDisguisedUDPBatch(addr epAddr, peer key.NodePublic, buffs [][]byte, offset int) (sent bool, err error) {
++	for _, buff := range buffs {
++		pkt := c.marshalSDWANPacket(peer, buff[offset:])
++		sent, err = c.sendUDPStd(addr.ap, pkt)
++		if err != nil {
++			c.maybeRebindOnError(err)
++			return false, err
++		}
++		if !sent {
++			return false, nil
++		}
++	}
++	return true, nil
++}
++
++type sdwanSession struct {
++	sid     uint16
++	token   uint32
++	xorKey  [8]byte
++	srcIP   [4]byte
++	dstIP   [4]byte
++	srcPort uint16
++	dstPort uint16
++}
++
++func (s sdwanSession) valid() bool {
++	return s.sid != 0 || s.token != 0
++}
++
++type sdwanSessionIndexKey struct {
++	sid   uint16
++	token uint32
++}
++
++type sdwanCapabilityRule struct {
++	Mode string `json:"mode,omitempty"`
++}
++
++func sdwanSessionKey(session sdwanSession) sdwanSessionIndexKey {
++	return sdwanSessionIndexKey{sid: session.sid, token: session.token}
++}
++
++func nodeCaps(filt *filter.Filter, src, dst tailcfg.NodeView) tailcfg.PeerCapMap {
++	if filt == nil || !src.Valid() || !dst.Valid() {
++		return nil
++	}
++	for _, srcPrefix := range src.Addresses().All() {
++		if !srcPrefix.IsSingleIP() {
++			continue
++		}
++		srcAddr := srcPrefix.Addr()
++		for _, dstPrefix := range dst.Addresses().All() {
++			if !dstPrefix.IsSingleIP() {
++				continue
++			}
++			dstAddr := dstPrefix.Addr()
++			if dstAddr.BitLen() == srcAddr.BitLen() {
++				return filt.CapsWithValues(srcAddr, dstAddr)
++			}
++		}
++	}
++	return nil
++}
++
++func nodeUsesSDWAN(logf logger.Logf, filt *filter.Filter, src, dst tailcfg.NodeView) bool {
++	caps := nodeCaps(filt, src, dst)
++	if !caps.HasCapability(tailcfg.PeerCapabilitySDWANEncap) {
++		return false
++	}
++	rules, err := tailcfg.UnmarshalCapJSON[sdwanCapabilityRule](caps, tailcfg.PeerCapabilitySDWANEncap)
++	if err != nil {
++		if logf != nil {
++			logf("magicsock: invalid %q capability for %v->%v: %v", tailcfg.PeerCapabilitySDWANEncap, src.ID(), dst.ID(), err)
++		}
++		return false
++	}
++	if len(rules) == 0 {
++		return true
++	}
++	var enabled bool
++	for _, rule := range rules {
++		switch strings.ToLower(rule.Mode) {
++		case "", sdwanModeOn:
++			enabled = true
++		case sdwanModeOff:
++			return false
++		}
++	}
++	return enabled
++}
++
++func deriveSDWANSession(local, peer key.NodePublic) sdwanSession {
++	a, b := local, peer
++	if b.Less(a) {
++		a, b = b, a
++	}
++	seedInput := make([]byte, 0, 64)
++	seedInput = a.AppendTo(seedInput)
++	seedInput = b.AppendTo(seedInput)
++	seed := md5.Sum(seedInput)
++	username := hex.EncodeToString(seed[0:4])
++	password := hex.EncodeToString(seed[4:8])
++	xorInput := make([]byte, 0, len(username)+len(password))
++	xorInput = append(xorInput, username...)
++	xorInput = append(xorInput, password...)
++	xorSeed := md5.Sum(xorInput)
++	sid := binary.BigEndian.Uint16(seed[8:10])
++	if sid == 0 {
++		sid = 1
++	}
++	token := binary.BigEndian.Uint32(seed[10:14])
++	if token == 0 {
++		token = 1
++	}
++	return sdwanSession{
++		sid:     sid,
++		token:   token,
++		xorKey:  [8]byte(xorSeed[:8]),
++		srcIP:   [4]byte{10, seed[14], seed[15], 1},
++		dstIP:   [4]byte{10, seed[14], seed[15], 2},
++		srcPort: binary.BigEndian.Uint16(seed[0:2]) | 0xc000,
++		dstPort: binary.BigEndian.Uint16(seed[2:4]) | 0xc000,
++	}
++}
++
++func sdwanXOR(b []byte, key [8]byte) {
++	for i := range b {
++		b[i] ^= key[i%len(key)]
++	}
++}
++
++func ipv4HeaderChecksum(hdr []byte) uint16 {
++	var sum uint32
++	for i := 0; i < len(hdr); i += 2 {
++		if i == 10 {
++			continue
++		}
++		sum += uint32(binary.BigEndian.Uint16(hdr[i : i+2]))
++		for sum > 0xffff {
++			sum = (sum & 0xffff) + (sum >> 16)
++		}
++	}
++	return ^uint16(sum)
++}
++
++func (c *Conn) marshalSDWANPacket(peer key.NodePublic, wg []byte) []byte {
++	session := deriveSDWANSession(c.publicKeyAtomic.Load(), peer)
++	pkt := make([]byte, sdwanPayloadOffset+len(wg))
++	pkt[0] = sdwanPacketType
++	pkt[1] = sdwanEncryptFlag
++	binary.BigEndian.PutUint16(pkt[2:4], session.sid)
++	binary.BigEndian.PutUint32(pkt[4:8], session.token)
++	ipHdr := pkt[sdwanHeaderLen : sdwanHeaderLen+sdwanInnerIPv4Len]
++	udpHdr := pkt[sdwanHeaderLen+sdwanInnerIPv4Len : sdwanPayloadOffset]
++	ipHdr[0] = 0x45
++	binary.BigEndian.PutUint16(ipHdr[2:4], uint16(sdwanInnerIPv4Len+sdwanInnerUDPLen+len(wg)))
++	binary.BigEndian.PutUint16(ipHdr[4:6], session.sid)
++	binary.BigEndian.PutUint16(ipHdr[6:8], 0x4000)
++	ipHdr[8] = 64
++	ipHdr[9] = 17
++	copy(ipHdr[12:16], session.srcIP[:])
++	copy(ipHdr[16:20], session.dstIP[:])
++	binary.BigEndian.PutUint16(ipHdr[10:12], ipv4HeaderChecksum(ipHdr))
++	binary.BigEndian.PutUint16(udpHdr[0:2], session.srcPort)
++	binary.BigEndian.PutUint16(udpHdr[2:4], session.dstPort)
++	binary.BigEndian.PutUint16(udpHdr[4:6], uint16(sdwanInnerUDPLen+len(wg)))
++	copy(pkt[sdwanPayloadOffset:], wg)
++	sdwanXOR(pkt[sdwanHeaderLen:], session.xorKey)
++	return pkt
++}
++
++func (c *Conn) removeEndpointFromSDWANIndexLocked(ep *endpoint) {
++	if ep == nil {
++		return
++	}
++	ep.mu.Lock()
++	session := ep.disguiseSession
++	ep.mu.Unlock()
++	if !session.valid() {
++		return
++	}
++	k := sdwanSessionKey(session)
++	peers := c.sdwanPeersBySession[k]
++	for i, candidate := range peers {
++		if candidate == ep {
++			peers = append(peers[:i], peers[i+1:]...)
++			break
++		}
++	}
++	if len(peers) == 0 {
++		delete(c.sdwanPeersBySession, k)
++	} else {
++		c.sdwanPeersBySession[k] = peers
++	}
++}
++
++func (c *Conn) addEndpointToSDWANIndexLocked(ep *endpoint, session sdwanSession) {
++	if !session.valid() {
++		return
++	}
++	k := sdwanSessionKey(session)
++	c.sdwanPeersBySession[k] = append(c.sdwanPeersBySession[k], ep)
++}
++
++func (c *Conn) refreshEndpointDisguiseLocked(ep *endpoint) {
++	if ep == nil {
++		return
++	}
++	c.removeEndpointFromSDWANIndexLocked(ep)
++	ep.mu.Lock()
++	ep.refreshDisguiseLocked(c.publicKeyAtomic.Load())
++	session := ep.disguiseSession
++	ep.mu.Unlock()
++	c.addEndpointToSDWANIndexLocked(ep, session)
++}
++
++func (c *Conn) refreshAllEndpointDisguiseLocked() {
++	clear(c.sdwanPeersBySession)
++	c.peerMap.forEachEndpoint(func(ep *endpoint) {
++		ep.mu.Lock()
++		ep.refreshDisguiseLocked(c.publicKeyAtomic.Load())
++		session := ep.disguiseSession
++		ep.mu.Unlock()
++		c.addEndpointToSDWANIndexLocked(ep, session)
++	})
++}
++
++func (c *Conn) unwrapSDWANPacket(b []byte) (ep *endpoint, size int, ok bool) {
++	if len(b) < sdwanMinPacketLen || b[0] != sdwanPacketType || b[1] == 0 {
++		return nil, 0, false
++	}
++	selfKey := c.publicKeyAtomic.Load()
++	if selfKey.IsZero() {
++		return nil, 0, false
++	}
++	sid := binary.BigEndian.Uint16(b[2:4])
++	token := binary.BigEndian.Uint32(b[4:8])
++	c.mu.Lock()
++	candidates := append([]*endpoint(nil), c.sdwanPeersBySession[sdwanSessionIndexKey{sid: sid, token: token}]...)
++	c.mu.Unlock()
++	for _, candidate := range candidates {
++		candidate.mu.Lock()
++		session := candidate.disguiseSession
++		candidate.mu.Unlock()
++		if session.sid != sid || session.token != token {
++			continue
++		}
++		sdwanXOR(b[sdwanHeaderLen:], session.xorKey)
++		ipHdr := b[sdwanHeaderLen : sdwanHeaderLen+sdwanInnerIPv4Len]
++		if ipHdr[0] != 0x45 || ipHdr[9] != 17 ||
++			!bytes.Equal(ipHdr[12:16], session.srcIP[:]) ||
++			!bytes.Equal(ipHdr[16:20], session.dstIP[:]) {
++			sdwanXOR(b[sdwanHeaderLen:], session.xorKey)
++			continue
++		}
++		totalLen := int(binary.BigEndian.Uint16(ipHdr[2:4]))
++		if totalLen != len(b)-sdwanHeaderLen || totalLen < sdwanInnerIPv4Len+sdwanInnerUDPLen+1 {
++			sdwanXOR(b[sdwanHeaderLen:], session.xorKey)
++			continue
++		}
++		udpHdr := b[sdwanHeaderLen+sdwanInnerIPv4Len : sdwanPayloadOffset]
++		if binary.BigEndian.Uint16(udpHdr[0:2]) != session.srcPort || binary.BigEndian.Uint16(udpHdr[2:4]) != session.dstPort {
++			sdwanXOR(b[sdwanHeaderLen:], session.xorKey)
++			continue
++		}
++		udpLen := int(binary.BigEndian.Uint16(udpHdr[4:6]))
++		if udpLen != len(b)-sdwanHeaderLen-sdwanInnerIPv4Len || udpLen < sdwanInnerUDPLen+1 {
++			sdwanXOR(b[sdwanHeaderLen:], session.xorKey)
++			continue
++		}
++		size = copy(b, b[sdwanPayloadOffset:])
++		return candidate, size, true
++	}
++	return nil, 0, false
++}
++
+ // sendUDP sends UDP packet b to ipp.
+ // See sendAddr's docs on the return value meanings.
+ func (c *Conn) sendUDP(ipp netip.AddrPort, b []byte, isDisco bool, isGeneveEncap bool) (sent bool, err error) {
+@@ -1800,13 +2090,18 @@ func (c *Conn) receiveIP(b []byte, ipp netip.AddrPort, cache *epAddrEndpointCach
+ 	size = len(b)
+ 
+ 	var geneve packet.GeneveHeader
++	var sdwanEP *endpoint
++	if len(b) > 0 && b[0] == sdwanPacketType {
++		if sdwanEP, size, ok = c.unwrapSDWANPacket(b); !ok {
++			return nil, 0, false, false
++		}
++		b = b[:size]
++	}
+ 	pt, isGeneveEncap := packetLooksLike(b)
+ 	src := epAddr{ap: ipp}
+ 	if isGeneveEncap {
+ 		err := geneve.Decode(b)
+ 		if err != nil {
+-			// Decode only returns an error when 'b' is too short, and
+-			// 'isGeneveEncap' indicates it's a sufficient length.
+ 			c.logf("[unexpected] geneve header decoding error: %v", err)
+ 			return nil, 0, false, false
+ 		}
+@@ -1854,6 +2149,9 @@ func (c *Conn) receiveIP(b []byte, ipp netip.AddrPort, cache *epAddrEndpointCach
+ 	}
+ 
+ 	if cache.epAddr == src && cache.de != nil && cache.gen == cache.de.numStopAndReset() {
++		if sdwanEP != nil && cache.de != sdwanEP {
++			return &lazyEndpoint{c: c, maybeEP: sdwanEP, src: src}, size, isGeneveEncap, true
++		}
+ 		ep = cache.de
+ 	} else {
+ 		c.mu.Lock()
+@@ -1862,7 +2160,10 @@ func (c *Conn) receiveIP(b []byte, ipp netip.AddrPort, cache *epAddrEndpointCach
+ 		if !ok {
+ 			// TODO(jwhited): reuse [lazyEndpoint] across calls to receiveIP()
+ 			//  for the same batch & [epAddr] src.
+-			return &lazyEndpoint{c: c, src: src}, size, isGeneveEncap, true
++			return &lazyEndpoint{c: c, maybeEP: sdwanEP, src: src}, size, isGeneveEncap, true
++		}
++		if sdwanEP != nil && de != sdwanEP {
++			return &lazyEndpoint{c: c, maybeEP: sdwanEP, src: src}, size, isGeneveEncap, true
+ 		}
+ 		cache.epAddr = src
+ 		cache.de = de
+@@ -2063,7 +2364,7 @@ func (c *Conn) sendDiscoMessage(dst epAddr, dstKey key.NodePublic, dstDisco key.
+ //
+ // [packetLooksLikeSTUNBinding] is never Geneve-encapsulated.
+ //
+-// Naked STUN binding, Naked Disco, Geneve followed by Disco, naked WireGuard,
++// Naked STUN binding, naked Disco, Geneve followed by Disco, naked WireGuard,
+ // and Geneve followed by WireGuard can be confidently distinguished based on
+ // the following:
+ //
+@@ -2222,7 +2523,7 @@ func (c *Conn) handleDiscoMessage(msg []byte, src epAddr, shouldBeRelayHandshake
+ 		// Callers may choose to pass on to wireguard, in case
+ 		// it's actually a wireguard packet (super unlikely, but).
+ 		if debugDisco() {
+-			c.logf("magicsock: disco: failed to open naclbox from %v (wrong rcpt?) via %s", sender, via)
++			c.logf("magicsock: disco: failed to open naclbox from %v (wrong rcpt?) via %s", sender.ShortString(), via)
+ 		}
+ 
+ 		metricRecvDiscoBadKey.Add(1)
+@@ -2332,14 +2633,10 @@ func (c *Conn) handleDiscoMessage(msg []byte, src epAddr, shouldBeRelayHandshake
+ 		}
+ 
+ 		ep.mu.Lock()
+-		relayCapable := ep.relayCapable
+ 		lastBest := ep.bestAddr
+ 		lastBestIsTrusted := mono.Now().Before(ep.trustBestAddrUntil)
+ 		ep.mu.Unlock()
+-		if isVia && !relayCapable {
+-			c.logf("magicsock: disco: ignoring %s from %v; %v is not known to be relay capable", msgType, sender.ShortString(), sender.ShortString())
+-			return
+-		}
++
+ 		epDisco := ep.disco.Load()
+ 		if epDisco == nil {
+ 			return
+@@ -2672,6 +2969,7 @@ func (c *Conn) discoInfoForKnownPeerLocked(k key.DiscoPublic) *discoInfo {
+ 	return di
+ }
+ 
++// SetNetworkUp updates the network up state for the connection.
+ func (c *Conn) SetNetworkUp(up bool) {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()
+@@ -2755,6 +3053,7 @@ func (c *Conn) SetPrivateKey(privateKey key.NodePrivate) error {
+ 			ep.stopAndReset()
+ 		})
+ 	}
++	c.refreshAllEndpointDisguiseLocked()
+ 
+ 	return nil
+ }
+@@ -2882,6 +3181,7 @@ func capVerIsRelayCapable(version tailcfg.CapabilityVersion) bool {
+ func (c *Conn) SetFilter(f *filter.Filter) {
+ 	c.mu.Lock()
+ 	c.filt = f
++	c.refreshEndpointSendDisguiseLocked()
+ 	self := c.self
+ 	peers := c.peers
+ 	relayClientEnabled := c.relayClientEnabled
+@@ -2897,6 +3197,18 @@ func (c *Conn) SetFilter(f *filter.Filter) {
+ 	c.updateRelayServersSet(f, self, peers)
+ }
+ 
++func (c *Conn) refreshEndpointSendDisguiseLocked() {
++	for _, peer := range c.peers.AsSlice() {
++		ep, ok := c.peerMap.endpointForNodeID(peer.ID())
++		if !ok {
++			continue
++		}
++		ep.mu.Lock()
++		ep.sendDisguised = nodeUsesSDWAN(c.logf, c.filt, c.self, peer)
++		ep.mu.Unlock()
++	}
++}
++
+ // updateRelayServersSet iterates all peers and self, evaluating filt for each
+ // one in order to determine which are relay server candidates. filt, self, and
+ // peers are passed as args (vs c.mu-guarded fields) to enable callers to
+@@ -2943,34 +3255,7 @@ func (c *Conn) updateRelayServersSet(filt *filter.Filter, self tailcfg.NodeView,
+ 
+ // nodeHasCap returns true if src has cap on dst, otherwise it returns false.
+ func nodeHasCap(filt *filter.Filter, src, dst tailcfg.NodeView, cap tailcfg.PeerCapability) bool {
+-	if filt == nil ||
+-		!src.Valid() ||
+-		!dst.Valid() {
+-		return false
+-	}
+-	for _, srcPrefix := range src.Addresses().All() {
+-		if !srcPrefix.IsSingleIP() {
+-			continue
+-		}
+-		srcAddr := srcPrefix.Addr()
+-		for _, dstPrefix := range dst.Addresses().All() {
+-			if !dstPrefix.IsSingleIP() {
+-				continue
+-			}
+-			dstAddr := dstPrefix.Addr()
+-			if dstAddr.BitLen() == srcAddr.BitLen() { // same address family
+-				// [nodeBackend.peerCapsLocked] only returns/considers the
+-				// [tailcfg.PeerCapMap] between the passed src and the _first_
+-				// host (/32 or /128) address for self. We are consistent with
+-				// that behavior here. If src and dst host addresses are of the
+-				// same address family they either have the capability or not.
+-				// We do not check against additional host addresses of the same
+-				// address family.
+-				return filt.CapsWithValues(srcAddr, dstAddr).HasCapability(cap)
+-			}
+-		}
+-	}
+-	return false
++	return nodeCaps(filt, src, dst).HasCapability(cap)
+ }
+ 
+ // candidatePeerRelay represents the identifiers and DERP home region ID for a
+@@ -3030,6 +3315,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+ 		return false
+ 	}
+ 
++	priorSelf := c.self
+ 	priorPeers := c.peers
+ 	metricNumPeers.Set(int64(len(peers)))
+ 
+@@ -3049,12 +3335,12 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+ 	// TODO: mutate [debugFlags] here instead of in various [Conn] setters.
+ 	flags := c.debugFlagsLocked()
+ 
++	selfChanged := !priorSelf.Equal(self)
+ 	peersChanged = !nodesEqual(priorPeers, curPeers)
+ 	if !peersChanged && c.lastFlags == flags {
+-		// The rest of this function is all adjusting state for peers that have
+-		// changed. But if the set of peers is equal and the debug flags (for
+-		// silent disco and probe UDP lifetime) haven't changed, there is no
+-		// need to do anything else.
++		if selfChanged {
++			c.refreshEndpointSendDisguiseLocked()
++		}
+ 		return
+ 	}
+ 
+@@ -3082,6 +3368,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+ 		if ok && ep.publicKey != n.Key() {
+ 			// The node rotated public keys. Delete the old endpoint and create
+ 			// it anew.
++			c.removeEndpointFromSDWANIndexLocked(ep)
+ 			c.peerMap.deleteEndpoint(ep)
+ 			ok = false
+ 		}
+@@ -3098,6 +3385,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+ 				//    non-Tailscale node (should not enter here due to the
+ 				//    IsWireGuardOnly check)
+ 				// 3. The server is misbehaving.
++				c.removeEndpointFromSDWANIndexLocked(ep)
+ 				c.peerMap.deleteEndpoint(ep)
+ 				continue
+ 			}
+@@ -3106,6 +3394,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+ 				oldDiscoKey = epDisco.key
+ 			}
+ 			ep.updateFromNode(n, flags.heartbeatDisabled, flags.probeUDPLifetimeOn)
++			c.refreshEndpointDisguiseLocked(ep)
+ 			c.peerMap.upsertEndpoint(ep, oldDiscoKey) // maybe update discokey mappings in peerMap
+ 			continue
+ 		}
+@@ -3169,6 +3458,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+ 		}
+ 
+ 		ep.updateFromNode(n, flags.heartbeatDisabled, flags.probeUDPLifetimeOn)
++		c.refreshEndpointDisguiseLocked(ep)
+ 		c.peerMap.upsertEndpoint(ep, key.DiscoPublic{})
+ 	}
+ 
+@@ -3184,6 +3474,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+ 		}
+ 		c.peerMap.forEachEndpoint(func(ep *endpoint) {
+ 			if !keep.Contains(ep.publicKey) {
++				c.removeEndpointFromSDWANIndexLocked(ep)
+ 				c.peerMap.deleteEndpoint(ep)
+ 			}
+ 		})
+@@ -3949,7 +4240,7 @@ type discoInfo struct {
+ 	discoKey key.DiscoPublic
+ 
+ 	// discoShort is discoKey.ShortString().
+-	// Not modified once initialized;
++	// Not modified once initialized.
+ 	discoShort string
+ 
+ 	// sharedKey is the precomputed key for communication with the
+@@ -4144,16 +4435,15 @@ func (c *Conn) SetLastNetcheckReportForTest(ctx context.Context, report *netchec
+ // can't map to a Tailscale peer. But WireGuard most likely can, once it
+ // decrypts it. So we implement the [conn.InitiationAwareEndpoint] and
+ // [conn.PeerAwareEndpoint] interfaces, to allow WireGuard to tell us who it is
+-// later, just-in-time to configure the peer, and set the associated [epAddr]
+-// in the [peerMap]. Future receives on the associated [epAddr] will then
+-// resolve directly to an [*endpoint].
++// later, just-in-time to configure the peer, and note its activity via
++// [*endpoint.noteRecvActivity], before it performs peer lookup and attempts
++// decryption.
+ //
+-// We also sometimes (see [Conn.receiveIP]) return a [*lazyEndpoint] to
+-// wireguard-go to verify an [epAddr] resolves to the [*endpoint] (maybeEP) we
+-// believe it to be, to resolve [epAddr] collisions across peers. [epAddr]
+-// collisions have a higher chance of occurrence for packets received over peer
+-// relays versus direct connections, as peer relay connections do not upsert
+-// into [peerMap] around disco packet reception, but direct connections do.
++// Reception of all other WireGuard message types implies pre-existing knowledge
++// of the peer by wireguard-go for it to do useful work. See
++// [userspaceEngine.maybeReconfigWireguardLocked] &
++// [userspaceEngine.noteRecvActivity] for more details around just-in-time
++// wireguard-go peer (de)configuration.
+ type lazyEndpoint struct {
+ 	c       *Conn
+ 	maybeEP *endpoint // or nil if unknown
+diff --git a/wgengine/magicsock/magicsock_test.go b/wgengine/magicsock/magicsock_test.go
+index 16d392e42e1a61ad4977eab9f935c32e09d715fe..aeb08e6404bc0c5a8c348f9b12296f1e62f8d4fb 100644
+--- a/wgengine/magicsock/magicsock_test.go
++++ b/wgengine/magicsock/magicsock_test.go
+@@ -580,7 +580,7 @@ func TestDERPActiveFuncCalledAfterConnect(t *testing.T) {
+ 
+ // TestDeviceStartStop exercises the startup and shutdown logic of
+ // wireguard-go, which is intimately intertwined with magicsock's own
+-// lifecycle. We seem to be good at generating deadlocks here, so if
++// lifecycle. We seem to be generating deadlocks here, so if
+ // this test fails you should suspect a deadlock somewhere in startup
+ // or shutdown. It may be an infrequent flake, so run with
+ // -count=10000 to be sure.
+@@ -2957,7 +2957,7 @@ func TestAddrForPingSizeLocked(t *testing.T) {
+ 		},
+ 		{
+ 			desc:            "ping_size_too_big_for_trusted_UDP_addr_should_start_discovery_and_send_to_DERP",
+-			size:            pktLenToPingSize(1501, validUdpAddr.Addr().Is6()),
++			size:            pktLenToPingSize(1501, validUdpAddr.Addr().Is6(), false),
+ 			mtu:             1500,
+ 			bestAddr:        true,
+ 			bestAddrTrusted: true,
+@@ -2966,7 +2966,7 @@ func TestAddrForPingSizeLocked(t *testing.T) {
+ 		},
+ 		{
+ 			desc:            "ping_size_too_big_for_untrusted_UDP_addr_should_start_discovery_and_send_to_DERP",
+-			size:            pktLenToPingSize(1501, validUdpAddr.Addr().Is6()),
++			size:            pktLenToPingSize(1501, validUdpAddr.Addr().Is6(), false),
+ 			mtu:             1500,
+ 			bestAddr:        true,
+ 			bestAddrTrusted: false,
+@@ -2975,7 +2975,7 @@ func TestAddrForPingSizeLocked(t *testing.T) {
+ 		},
+ 		{
+ 			desc:            "ping_size_small_enough_for_trusted_UDP_addr_should_send_to_UDP_and_not_DERP",
+-			size:            pktLenToPingSize(1500, validUdpAddr.Addr().Is6()),
++			size:            pktLenToPingSize(1500, validUdpAddr.Addr().Is6(), false),
+ 			mtu:             1500,
+ 			bestAddr:        true,
+ 			bestAddrTrusted: true,
+@@ -2984,7 +2984,7 @@ func TestAddrForPingSizeLocked(t *testing.T) {
+ 		},
+ 		{
+ 			desc:            "ping_size_small_enough_for_untrusted_UDP_addr_should_send_to_UDP_and_DERP",
+-			size:            pktLenToPingSize(1500, validUdpAddr.Addr().Is6()),
++			size:            pktLenToPingSize(1500, validUdpAddr.Addr().Is6(), false),
+ 			mtu:             1500,
+ 			bestAddr:        true,
+ 			bestAddrTrusted: false,
+@@ -3025,6 +3025,345 @@ func TestAddrForPingSizeLocked(t *testing.T) {
+ 	}
+ }
+ 
++func setTestPrivateKey(c *Conn, private key.NodePrivate) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.privateKey = private
++	c.havePrivateKey.Store(!private.IsZero())
++	if private.IsZero() {
++		c.publicKeyAtomic.Store(key.NodePublic{})
++	} else {
++		c.publicKeyAtomic.Store(private.Public())
++	}
++	c.refreshAllEndpointDisguiseLocked()
++}
++
++func mustSDWANCapRaw(t testing.TB, mode string) tailcfg.RawMessage {
++	t.Helper()
++	raw, err := tailcfg.MarshalCapJSON(sdwanCapabilityRule{Mode: mode})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return raw
++}
++
++func testNodeView(id tailcfg.NodeID, key key.NodePublic, disco key.DiscoPublic, prefix string) tailcfg.NodeView {
++	return (&tailcfg.Node{
++		ID:        id,
++		Key:       key,
++		DiscoKey:  disco,
++		Addresses: []netip.Prefix{netip.MustParsePrefix(prefix)},
++	}).View()
++}
++
++func testSDWANMatch(src, dst tailcfg.NodeView, values ...tailcfg.RawMessage) filtertype.Match {
++	return filtertype.Match{
++		Srcs: src.AsStruct().Addresses,
++		Caps: []filtertype.CapMatch{
++			{
++				Dst:    dst.AsStruct().Addresses[0],
++				Cap:    tailcfg.PeerCapabilitySDWANEncap,
++				Values: values,
++			},
++		},
++	}
++}
++
++func testSDWANFilter(matches ...filtertype.Match) *filter.Filter {
++	return filter.New(matches, nil, nil, nil, nil, nil)
++}
++
++func testEndpointSendDisguised(ep *endpoint) bool {
++	ep.mu.Lock()
++	defer ep.mu.Unlock()
++	return ep.sendDisguised
++}
++
++func testEndpointSessionKey(ep *endpoint) sdwanSessionIndexKey {
++	ep.mu.Lock()
++	defer ep.mu.Unlock()
++	return sdwanSessionKey(ep.disguiseSession)
++}
++
++func TestNodeUsesSDWAN(t *testing.T) {
++	onRaw := mustSDWANCapRaw(t, sdwanModeOn)
++	offRaw := mustSDWANCapRaw(t, sdwanModeOff)
++	self := testNodeView(1, key.NodePublic{}, key.DiscoPublic{}, "1.1.1.1/32")
++	peer := testNodeView(2, key.NodePublic{}, key.DiscoPublic{}, "2.2.2.2/32")
++	tests := []struct {
++		name string
++		filt *filter.Filter
++		want bool
++	}{
++		{
++			name: "absent",
++			filt: testSDWANFilter(),
++			want: false,
++		},
++		{
++			name: "bare-capability-enables",
++			filt: testSDWANFilter(testSDWANMatch(self, peer)),
++			want: true,
++		},
++		{
++			name: "mode-on-enables",
++			filt: testSDWANFilter(testSDWANMatch(self, peer, onRaw)),
++			want: true,
++		},
++		{
++			name: "mode-off-disables",
++			filt: testSDWANFilter(testSDWANMatch(self, peer, offRaw)),
++			want: false,
++		},
++		{
++			name: "off-overrides-on",
++			filt: testSDWANFilter(
++				testSDWANMatch(self, peer, onRaw),
++				testSDWANMatch(self, peer, offRaw),
++			),
++			want: false,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			if got := nodeUsesSDWAN(nil, tt.filt, self, peer); got != tt.want {
++				t.Fatalf("nodeUsesSDWAN() = %v, want %v", got, tt.want)
++			}
++		})
++	}
++}
++
++func TestNodeUsesSDWANLogsInvalidCapabilityJSON(t *testing.T) {
++	self := testNodeView(1, key.NodePublic{}, key.DiscoPublic{}, "1.1.1.1/32")
++	peer := testNodeView(2, key.NodePublic{}, key.DiscoPublic{}, "2.2.2.2/32")
++	filt := testSDWANFilter(testSDWANMatch(self, peer, tailcfg.RawMessage(`{"mode":`)))
++
++	var logs []string
++	logf := func(format string, a ...any) {
++		logs = append(logs, fmt.Sprintf(format, a...))
++	}
++	if got := nodeUsesSDWAN(logf, filt, self, peer); got {
++		t.Fatal("invalid capability JSON should disable sdwan")
++	}
++	if len(logs) == 0 {
++		t.Fatal("expected invalid capability JSON to be logged")
++	}
++	if !strings.Contains(logs[0], string(tailcfg.PeerCapabilitySDWANEncap)) {
++		t.Fatalf("log %q does not mention capability name", logs[0])
++	}
++}
++
++func TestSetFilterUpdatesDisguiseSendAndKeepsReceiveIndex(t *testing.T) {
++	c := newConn(logger.Discard)
++	localPriv := key.NewNode()
++	setTestPrivateKey(c, localPriv)
++	peerPub := key.NewNode().Public()
++	selfNode := testNodeView(100, localPriv.Public(), key.DiscoPublic{}, "1.1.1.1/32")
++	peerNode := testNodeView(1, peerPub, key.NewDisco().Public(), "2.2.2.2/32")
++	onRaw := mustSDWANCapRaw(t, sdwanModeOn)
++	offRaw := mustSDWANCapRaw(t, sdwanModeOff)
++	onFilter := testSDWANFilter(testSDWANMatch(selfNode, peerNode, onRaw))
++	offFilter := testSDWANFilter(testSDWANMatch(selfNode, peerNode, offRaw))
++
++	c.updateNodes(selfNode, []tailcfg.NodeView{peerNode})
++	c.SetFilter(onFilter)
++
++	wantSessionKey := sdwanSessionKey(deriveSDWANSession(localPriv.Public(), peerPub))
++	c.mu.Lock()
++	ep, ok := c.peerMap.endpointForNodeKey(peerPub)
++	indexed := append([]*endpoint(nil), c.sdwanPeersBySession[wantSessionKey]...)
++	c.mu.Unlock()
++	if !ok {
++		t.Fatal("peer endpoint not found")
++	}
++	if len(indexed) != 1 || indexed[0] != ep {
++		t.Fatalf("unexpected indexed endpoints: %+v", indexed)
++	}
++	if !testEndpointSendDisguised(ep) {
++		t.Fatal("sendDisguised was not enabled from filter capability")
++	}
++	if got := testEndpointSessionKey(ep); got != wantSessionKey {
++		t.Fatalf("cached disguise session = %+v, want %+v", got, wantSessionKey)
++	}
++
++	c.SetFilter(offFilter)
++	c.mu.Lock()
++	indexed = append([]*endpoint(nil), c.sdwanPeersBySession[wantSessionKey]...)
++	c.mu.Unlock()
++	if len(indexed) != 1 || indexed[0] != ep {
++		t.Fatalf("receive-side disguise index should remain populated: %+v", indexed)
++	}
++	if testEndpointSendDisguised(ep) {
++		t.Fatal("sendDisguised was not disabled by off rule")
++	}
++}
++
++func TestUpdateNodesSelfChangeRefreshesSendDisguise(t *testing.T) {
++	c := newConn(logger.Discard)
++	localPriv := key.NewNode()
++	setTestPrivateKey(c, localPriv)
++	peerPub := key.NewNode().Public()
++	selfNode1 := testNodeView(100, localPriv.Public(), key.DiscoPublic{}, "1.1.1.1/32")
++	selfNode2 := testNodeView(100, localPriv.Public(), key.DiscoPublic{}, "3.3.3.3/32")
++	peerNode := testNodeView(1, peerPub, key.NewDisco().Public(), "2.2.2.2/32")
++	onRaw := mustSDWANCapRaw(t, sdwanModeOn)
++	filt := testSDWANFilter(testSDWANMatch(selfNode1, peerNode, onRaw))
++
++	c.updateNodes(selfNode1, []tailcfg.NodeView{peerNode})
++	c.SetFilter(filt)
++	c.mu.Lock()
++	ep, ok := c.peerMap.endpointForNodeKey(peerPub)
++	c.mu.Unlock()
++	if !ok {
++		t.Fatal("peer endpoint not found")
++	}
++	if !testEndpointSendDisguised(ep) {
++		t.Fatal("sendDisguised should be enabled before self update")
++	}
++
++	c.updateNodes(selfNode2, []tailcfg.NodeView{peerNode})
++
++	if testEndpointSendDisguised(ep) {
++		t.Fatal("sendDisguised should refresh when self changes even if peers do not")
++	}
++}
++
++func TestUpdateNodesRemovesDisguiseIndexOnPeerKeyRotation(t *testing.T) {
++	c := newConn(logger.Discard)
++	localPriv := key.NewNode()
++	setTestPrivateKey(c, localPriv)
++	peerPub1 := key.NewNode().Public()
++	peerPub2 := key.NewNode().Public()
++	for peerPub2 == peerPub1 {
++		peerPub2 = key.NewNode().Public()
++	}
++	selfNode := testNodeView(100, localPriv.Public(), key.DiscoPublic{}, "1.1.1.1/32")
++	peerNode1 := testNodeView(1, peerPub1, key.NewDisco().Public(), "2.2.2.2/32")
++	peerNode2 := testNodeView(1, peerPub2, key.NewDisco().Public(), "2.2.2.2/32")
++
++	c.updateNodes(selfNode, []tailcfg.NodeView{peerNode1})
++	oldSessionKey := sdwanSessionKey(deriveSDWANSession(localPriv.Public(), peerPub1))
++	c.updateNodes(selfNode, []tailcfg.NodeView{peerNode2})
++	newSessionKey := sdwanSessionKey(deriveSDWANSession(localPriv.Public(), peerPub2))
++
++	c.mu.Lock()
++	oldIndexed := append([]*endpoint(nil), c.sdwanPeersBySession[oldSessionKey]...)
++	newIndexed := append([]*endpoint(nil), c.sdwanPeersBySession[newSessionKey]...)
++	_, oldOk := c.peerMap.endpointForNodeKey(peerPub1)
++	_, newOk := c.peerMap.endpointForNodeKey(peerPub2)
++	c.mu.Unlock()
++	if oldOk {
++		t.Fatal("old peer key should have been removed")
++	}
++	if !newOk {
++		t.Fatal("new peer key should exist after rotation")
++	}
++	if len(oldIndexed) != 0 {
++		t.Fatalf("old disguise index retained after peer key rotation: %+v", oldIndexed)
++	}
++	if len(newIndexed) != 1 {
++		t.Fatalf("new disguise index not populated correctly: %+v", newIndexed)
++	}
++}
++
++func TestUpdateNodesRemovesDisguiseIndexOnZeroDiscoKey(t *testing.T) {
++	c := newConn(logger.Discard)
++	localPriv := key.NewNode()
++	setTestPrivateKey(c, localPriv)
++	peerPub := key.NewNode().Public()
++	selfNode := testNodeView(100, localPriv.Public(), key.DiscoPublic{}, "1.1.1.1/32")
++	peerNode := testNodeView(1, peerPub, key.NewDisco().Public(), "2.2.2.2/32")
++	peerNodeZeroDisco := testNodeView(1, peerPub, key.DiscoPublic{}, "2.2.2.2/32")
++
++	c.updateNodes(selfNode, []tailcfg.NodeView{peerNode})
++	sessionKey := sdwanSessionKey(deriveSDWANSession(localPriv.Public(), peerPub))
++	c.updateNodes(selfNode, []tailcfg.NodeView{peerNodeZeroDisco})
++
++	c.mu.Lock()
++	indexed := append([]*endpoint(nil), c.sdwanPeersBySession[sessionKey]...)
++	_, ok := c.peerMap.endpointForNodeKey(peerPub)
++	c.mu.Unlock()
++	if ok {
++		t.Fatal("peer should have been removed after zero disco key update")
++	}
++	if len(indexed) != 0 {
++		t.Fatalf("disguise index retained after zero disco key removal: %+v", indexed)
++	}
++}
++
++func TestSetPrivateKeyRefreshesDisguiseIndex(t *testing.T) {
++	c := newConn(logger.Discard)
++	oldPriv := key.NewNode()
++	setTestPrivateKey(c, oldPriv)
++	peerPub := key.NewNode().Public()
++	selfNode := testNodeView(100, oldPriv.Public(), key.DiscoPublic{}, "1.1.1.1/32")
++	peerNode := testNodeView(1, peerPub, key.NewDisco().Public(), "2.2.2.2/32")
++	c.updateNodes(selfNode, []tailcfg.NodeView{peerNode})
++
++	oldSessionKey := sdwanSessionKey(deriveSDWANSession(oldPriv.Public(), peerPub))
++	newPriv := key.NewNode()
++	for newPriv.Public() == oldPriv.Public() {
++		newPriv = key.NewNode()
++	}
++	setTestPrivateKey(c, newPriv)
++	newSessionKey := sdwanSessionKey(deriveSDWANSession(newPriv.Public(), peerPub))
++
++	c.mu.Lock()
++	ep, ok := c.peerMap.endpointForNodeKey(peerPub)
++	oldIndexed := append([]*endpoint(nil), c.sdwanPeersBySession[oldSessionKey]...)
++	newIndexed := append([]*endpoint(nil), c.sdwanPeersBySession[newSessionKey]...)
++	c.mu.Unlock()
++	if !ok {
++		t.Fatal("peer endpoint not found after key rotation")
++	}
++	if len(oldIndexed) != 0 {
++		t.Fatalf("old disguise session index still populated: %+v", oldIndexed)
++	}
++	if len(newIndexed) != 1 || newIndexed[0] != ep {
++		t.Fatalf("new disguise session index incorrect: %+v", newIndexed)
++	}
++	if got := testEndpointSessionKey(ep); got != newSessionKey {
++		t.Fatalf("endpoint disguise session = %+v, want %+v", got, newSessionKey)
++	}
++}
++
++func TestHandlePongConnLockedUsesDisguisedWireMTU(t *testing.T) {
++	c := newConn(logger.Discard)
++	localPriv := key.NewNode()
++	setTestPrivateKey(c, localPriv)
++	peerPub := key.NewNode().Public()
++	src := epAddr{ap: netip.MustParseAddrPort("1.2.3.4:5678")}
++	de := &endpoint{
++		c:             c,
++		publicKey:     peerPub,
++		sentPing:      map[stun.TxID]sentPing{},
++		endpointState: map[netip.AddrPort]*endpointState{src.ap: {}},
++		sendDisguised: true,
++	}
++	de.refreshDisguiseLocked(localPriv.Public())
++	txid := stun.NewTxID()
++	timer := time.NewTimer(time.Hour)
++	de.sentPing[txid] = sentPing{
++		to:        src,
++		at:        mono.Now(),
++		timer:     timer,
++		size:      pktLenToPingSize(1500, false, true),
++		disguised: true,
++	}
++	de.bestAddr = addrQuality{}
++
++	c.mu.Lock()
++	known := de.handlePongConnLocked(&disco.Pong{TxID: [12]byte(txid)}, nil, src)
++	c.mu.Unlock()
++	defer timer.Stop()
++	if !known {
++		t.Fatal("pong txid should have been recognized")
++	}
++	if de.bestAddr.wireMTU != 1500 {
++		t.Fatalf("bestAddr wireMTU = %v, want 1500", de.bestAddr.wireMTU)
++	}
++}
++
+ func TestMaybeSetNearestDERP(t *testing.T) {
+ 	derpMap := &tailcfg.DERPMap{
+ 		Regions: map[int]*tailcfg.DERPRegion{
+@@ -3120,10 +3459,10 @@ func TestMaybeSetNearestDERP(t *testing.T) {
+ 		},
+ 		{
+ 			name:               "connected_no_derp_fallback",
+-			old:                0,
+-			reportDERP:         0,
+-			connectedToControl: true,
+-			want:               31, // deterministic fallback
++			old:                0,    // no current DERP
++			reportDERP:         0,    // no new DERP
++			connectedToControl: true, // connected...
++			want:               31,   // ... but we fallback to deterministic value
+ 		},
+ 	}
+ 	for _, tt := range testCases {
+diff --git a/wgengine/magicsock/relaymanager.go b/wgengine/magicsock/relaymanager.go
+index e4cd5eb9ff5376fa8eb8cfb83556ca370025b66a..c8b70eac6293ef9b27d0b29e0ce923581510f1ec 100644
+--- a/wgengine/magicsock/relaymanager.go
++++ b/wgengine/magicsock/relaymanager.go
+@@ -674,7 +674,7 @@ func (r *relayManager) handleHandshakeWorkDoneRunLoop(done relayEndpointHandshak
+ 		epAddr:           addr,
+ 		relayServerDisco: done.work.se.ServerDisco,
+ 		latency:          done.latency,
+-		wireMTU:          pingSizeToPktLen(0, addr),
++		wireMTU:          pingSizeToPktLen(0, addr, false),
+ 	})
+ }
+ 
