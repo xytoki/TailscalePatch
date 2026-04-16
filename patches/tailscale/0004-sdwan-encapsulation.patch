@@ -1,5 +1,19 @@
+From 6627d0f27da724958afd62aaa882ec78db70830b Mon Sep 17 00:00:00 2001
+From: Hephaestus <hephaestus@local>
+Date: Thu, 16 Apr 2026 13:29:38 +0000
+Subject: [PATCH] sdwan encapsulation
+
+---
+ net/tstun/mtu.go                     |  43 +++
+ tailcfg/tailcfg.go                   |   4 +
+ wgengine/magicsock/endpoint.go       | 100 ++++--
+ wgengine/magicsock/magicsock.go      | 436 ++++++++++++++++++++++-----
+ wgengine/magicsock/magicsock_test.go | 357 +++++++++++++++++++++-
+ wgengine/magicsock/relaymanager.go   |   2 +-
+ 6 files changed, 825 insertions(+), 117 deletions(-)
+
 diff --git a/net/tstun/mtu.go b/net/tstun/mtu.go
-index 6eceb6833b964bf7af356b8b3ae30b32a5feac6b..ee08abbba2894d025b7391d48d27a32c18415cc3 100644
+index 6eceb6833..ee08abbba 100644
 --- a/net/tstun/mtu.go
 +++ b/net/tstun/mtu.go
 @@ -106,6 +106,18 @@
@@ -67,10 +81,10 @@ index 6eceb6833b964bf7af356b8b3ae30b32a5feac6b..ee08abbba2894d025b7391d48d27a32c
  // information about the path MTU to this peer.
  func SafeWireMTU() WireMTU {
 diff --git a/tailcfg/tailcfg.go b/tailcfg/tailcfg.go
-index c704a62484620c948ac61d746182d445fc903e43..c25782cbf9eb79f79c19a0c9f50ca8a962c565da 100644
+index 7405ec0e5..b8ad17b02 100644
 --- a/tailcfg/tailcfg.go
 +++ b/tailcfg/tailcfg.go
-@@ -1577,6 +1577,10 @@ type CapGrant struct {
+@@ -1578,6 +1578,10 @@ type CapGrant struct {
  	// relay endpoints to the peer which has this capability.
  	PeerCapabilityRelayTarget PeerCapability = "tailscale.com/cap/relay-target"
  
@@ -82,7 +96,7 @@ index c704a62484620c948ac61d746182d445fc903e43..c25782cbf9eb79f79c19a0c9f50ca8a9
  	// capabilities, such as the ability to add user groups to the OIDC
  	// claim
 diff --git a/wgengine/magicsock/endpoint.go b/wgengine/magicsock/endpoint.go
-index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2ff881989 100644
+index 31dcab67b..c372fd828 100644
 --- a/wgengine/magicsock/endpoint.go
 +++ b/wgengine/magicsock/endpoint.go
 @@ -39,6 +39,8 @@
@@ -194,7 +208,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  		}
  
  		switch {
-@@ -1256,8 +1271,13 @@ func (de *endpoint) sendDiscoPing(ep epAddr, discoKey key.DiscoPublic, txid stun
+@@ -1255,8 +1270,13 @@ func (de *endpoint) sendDiscoPing(ep epAddr, discoKey key.DiscoPublic, txid stun
  	}
  
  	if size != 0 {
@@ -210,7 +224,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  	}
  }
  
-@@ -1317,13 +1337,20 @@ func (de *endpoint) startDiscoPingLocked(ep epAddr, now mono.Time, purpose disco
+@@ -1316,13 +1336,20 @@ func (de *endpoint) startDiscoPingLocked(ep epAddr, now mono.Time, purpose disco
  
  	// Default to sending a single ping of the specified size
  	sizes := []int{size}
@@ -231,7 +245,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  			}
  		}
  	}
-@@ -1339,12 +1366,13 @@ func (de *endpoint) startDiscoPingLocked(ep epAddr, now mono.Time, purpose disco
+@@ -1338,12 +1365,13 @@ func (de *endpoint) startDiscoPingLocked(ep epAddr, now mono.Time, purpose disco
  	for _, s := range sizes {
  		txid := stun.NewTxID()
  		de.sentPing[txid] = sentPing{
@@ -251,7 +265,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  		}
  		if purpose == pingHeartbeatForUDPLifetime && de.probeUDPLifetime != nil {
  			de.probeUDPLifetime.lastTxID = txid
-@@ -1540,6 +1568,19 @@ func (de *endpoint) updateFromNode(n tailcfg.NodeView, heartbeatDisabled bool, p
+@@ -1539,6 +1567,19 @@ func (de *endpoint) updateFromNode(n tailcfg.NodeView, heartbeatDisabled bool, p
  	de.setEndpointsLocked(n.Endpoints())
  
  	de.relayCapable = capVerIsRelayCapable(n.Cap())
@@ -271,7 +285,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  }
  
  func (de *endpoint) setEndpointsLocked(eps interface {
-@@ -1671,8 +1712,12 @@ func (de *endpoint) noteConnectivityChange() {
+@@ -1670,8 +1711,12 @@ func (de *endpoint) noteConnectivityChange() {
  // a disco ping message of length size to reach its target at
  // udpAddr. size is the length of the entire disco message including
  // disco headers. If size is zero, assume it is the safe wire MTU.
@@ -285,7 +299,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  		return tstun.SafeWireMTU()
  	}
  	headerLen := ipv4.HeaderLen
-@@ -1683,6 +1728,9 @@ func pingSizeToPktLen(size int, udpAddr epAddr) tstun.WireMTU {
+@@ -1682,6 +1727,9 @@ func pingSizeToPktLen(size int, udpAddr epAddr) tstun.WireMTU {
  	if udpAddr.vni.IsSet() {
  		headerLen += packet.GeneveFixedHeaderLength
  	}
@@ -295,7 +309,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  	return tstun.WireMTU(size + headerLen)
  }
  
-@@ -1690,7 +1738,8 @@ func pingSizeToPktLen(size int, udpAddr epAddr) tstun.WireMTU {
+@@ -1689,7 +1737,8 @@ func pingSizeToPktLen(size int, udpAddr epAddr) tstun.WireMTU {
  // create a disco ping message whose on-the-wire length is exactly mtu
  // bytes long. If mtu is zero or less than the minimum ping size, then
  // no MTU probe is desired and return zero for an unpadded ping.
@@ -305,7 +319,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  	if mtu == 0 {
  		return 0
  	}
-@@ -1699,6 +1748,9 @@ func pktLenToPingSize(mtu tstun.WireMTU, is6 bool) int {
+@@ -1698,6 +1747,9 @@ func pktLenToPingSize(mtu tstun.WireMTU, is6 bool) int {
  		headerLen = ipv6.HeaderLen
  	}
  	headerLen += 8 // UDP header length
@@ -315,7 +329,7 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  	if mtu < tstun.WireMTU(headerLen) {
  		return 0
  	}
-@@ -1723,7 +1775,7 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src epAdd
+@@ -1722,7 +1774,7 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src epAdd
  	knownTxID = true // for naked returns below
  	de.removeSentDiscoPingLocked(m.TxID, sp, discoPongReceived)
  
@@ -324,17 +338,17 @@ index b8d3b96be219df3c91f65babc1d7ca0b509f150b..20a74a8a8b64a45f292e9e204871f3a2
  	if sp.size != 0 {
  		m := getPeerMTUsProbedMetric(tstun.WireMTU(pktLen))
  		m.Add(1)
-@@ -1776,7 +1828,7 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src epAdd
+@@ -1775,7 +1827,7 @@ func (de *endpoint) handlePongConnLocked(m *disco.Pong, di *discoInfo, src epAdd
  		thisPong := addrQuality{
  			epAddr:  sp.to,
  			latency: latency,
 -			wireMTU: pingSizeToPktLen(sp.size, sp.to),
 +			wireMTU: pingSizeToPktLen(sp.size, sp.to, sp.disguised),
  		}
- 		// TODO(jwhited): consider checking de.trustBestAddrUntil as well. If
- 		//  de.bestAddr is untrusted we may want to clear it, otherwise we could
+ 		bestUntrusted := now.After(de.trustBestAddrUntil)
+ 		if betterAddr(thisPong, de.bestAddr) || bestUntrusted {
 diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
-index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f10c629be 100644
+index 4c2132202..7320f9a7a 100644
 --- a/wgengine/magicsock/magicsock.go
 +++ b/wgengine/magicsock/magicsock.go
 @@ -9,8 +9,10 @@
@@ -773,7 +787,34 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  		epDisco := ep.disco.Load()
  		if epDisco == nil {
  			return
-@@ -2672,6 +2969,7 @@ func (c *Conn) discoInfoForKnownPeerLocked(k key.DiscoPublic) *discoInfo {
+@@ -2617,26 +2914,6 @@ func (c *Conn) enqueueCallMeMaybe(derpAddr netip.AddrPort, de *endpoint) {
+ 		return
+ 	}
+ 
+-	// Ignore endpoints from isolated peers.
+-	if len(de.endpointState) == 0 {
+-		// derp not initialized yet, so no endpoints
+-		return
+-	}
+-
+-	if len(de.endpointState) <= 2 {
+-		// derp connected, so the only endpoint is derp
+-		onlyderp := true
+-		for addr := range de.endpointState {
+-			if addr.Addr() != tailcfg.DerpMagicIPAddr {
+-				onlyderp = false
+-				break
+-			}
+-		}
+-		if onlyderp {
+-			return
+-		}
+-	}
+-
+ 	if !c.lastEndpointsTime.After(time.Now().Add(-endpointsFreshEnoughDuration)) {
+ 		c.dlogf("[v1] magicsock: want call-me-maybe but endpoints stale; restunning")
+ 
+@@ -2692,6 +2969,7 @@ func (c *Conn) discoInfoForKnownPeerLocked(k key.DiscoPublic) *discoInfo {
  	return di
  }
  
@@ -781,7 +822,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  func (c *Conn) SetNetworkUp(up bool) {
  	c.mu.Lock()
  	defer c.mu.Unlock()
-@@ -2755,6 +3053,7 @@ func (c *Conn) SetPrivateKey(privateKey key.NodePrivate) error {
+@@ -2775,6 +3053,7 @@ func (c *Conn) SetPrivateKey(privateKey key.NodePrivate) error {
  			ep.stopAndReset()
  		})
  	}
@@ -789,7 +830,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  
  	return nil
  }
-@@ -2882,6 +3181,7 @@ func capVerIsRelayCapable(version tailcfg.CapabilityVersion) bool {
+@@ -2902,6 +3181,7 @@ func capVerIsRelayCapable(version tailcfg.CapabilityVersion) bool {
  func (c *Conn) SetFilter(f *filter.Filter) {
  	c.mu.Lock()
  	c.filt = f
@@ -797,7 +838,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  	self := c.self
  	peers := c.peers
  	relayClientEnabled := c.relayClientEnabled
-@@ -2897,6 +3197,18 @@ func (c *Conn) SetFilter(f *filter.Filter) {
+@@ -2917,6 +3197,18 @@ func (c *Conn) SetFilter(f *filter.Filter) {
  	c.updateRelayServersSet(f, self, peers)
  }
  
@@ -816,7 +857,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  // updateRelayServersSet iterates all peers and self, evaluating filt for each
  // one in order to determine which are relay server candidates. filt, self, and
  // peers are passed as args (vs c.mu-guarded fields) to enable callers to
-@@ -2943,34 +3255,7 @@ func (c *Conn) updateRelayServersSet(filt *filter.Filter, self tailcfg.NodeView,
+@@ -2963,34 +3255,7 @@ func (c *Conn) updateRelayServersSet(filt *filter.Filter, self tailcfg.NodeView,
  
  // nodeHasCap returns true if src has cap on dst, otherwise it returns false.
  func nodeHasCap(filt *filter.Filter, src, dst tailcfg.NodeView, cap tailcfg.PeerCapability) bool {
@@ -852,7 +893,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  }
  
  // candidatePeerRelay represents the identifiers and DERP home region ID for a
-@@ -3030,6 +3315,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+@@ -3050,6 +3315,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
  		return false
  	}
  
@@ -860,7 +901,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  	priorPeers := c.peers
  	metricNumPeers.Set(int64(len(peers)))
  
-@@ -3049,12 +3335,12 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+@@ -3069,12 +3335,12 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
  	// TODO: mutate [debugFlags] here instead of in various [Conn] setters.
  	flags := c.debugFlagsLocked()
  
@@ -877,7 +918,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  		return
  	}
  
-@@ -3082,6 +3368,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+@@ -3102,6 +3368,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
  		if ok && ep.publicKey != n.Key() {
  			// The node rotated public keys. Delete the old endpoint and create
  			// it anew.
@@ -885,7 +926,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  			c.peerMap.deleteEndpoint(ep)
  			ok = false
  		}
-@@ -3098,6 +3385,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+@@ -3118,6 +3385,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
  				//    non-Tailscale node (should not enter here due to the
  				//    IsWireGuardOnly check)
  				// 3. The server is misbehaving.
@@ -893,15 +934,15 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  				c.peerMap.deleteEndpoint(ep)
  				continue
  			}
-@@ -3106,6 +3394,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
- 				oldDiscoKey = epDisco.key
+@@ -3127,6 +3395,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
  			}
  			ep.updateFromNode(n, flags.heartbeatDisabled, flags.probeUDPLifetimeOn)
+ 			c.prepareFallbackDERP(ep)
 +			c.refreshEndpointDisguiseLocked(ep)
  			c.peerMap.upsertEndpoint(ep, oldDiscoKey) // maybe update discokey mappings in peerMap
  			continue
  		}
-@@ -3169,6 +3458,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+@@ -3190,6 +3459,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
  		}
  
  		ep.updateFromNode(n, flags.heartbeatDisabled, flags.probeUDPLifetimeOn)
@@ -909,7 +950,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  		c.peerMap.upsertEndpoint(ep, key.DiscoPublic{})
  	}
  
-@@ -3184,6 +3474,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
+@@ -3205,6 +3475,7 @@ func (c *Conn) updateNodes(self tailcfg.NodeView, peers []tailcfg.NodeView) (pee
  		}
  		c.peerMap.forEachEndpoint(func(ep *endpoint) {
  			if !keep.Contains(ep.publicKey) {
@@ -917,7 +958,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  				c.peerMap.deleteEndpoint(ep)
  			}
  		})
-@@ -3949,7 +4240,7 @@ type discoInfo struct {
+@@ -3970,7 +4241,7 @@ type discoInfo struct {
  	discoKey key.DiscoPublic
  
  	// discoShort is discoKey.ShortString().
@@ -926,7 +967,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  	discoShort string
  
  	// sharedKey is the precomputed key for communication with the
-@@ -4144,16 +4435,15 @@ func (c *Conn) SetLastNetcheckReportForTest(ctx context.Context, report *netchec
+@@ -4165,16 +4436,15 @@ func (c *Conn) SetLastNetcheckReportForTest(ctx context.Context, report *netchec
  // can't map to a Tailscale peer. But WireGuard most likely can, once it
  // decrypts it. So we implement the [conn.InitiationAwareEndpoint] and
  // [conn.PeerAwareEndpoint] interfaces, to allow WireGuard to tell us who it is
@@ -952,7 +993,7 @@ index f13e31554883c500c6062f4a745f7324cce0a72a..6700459960018137fc6b373bf192fb3f
  	c       *Conn
  	maybeEP *endpoint // or nil if unknown
 diff --git a/wgengine/magicsock/magicsock_test.go b/wgengine/magicsock/magicsock_test.go
-index 16d392e42e1a61ad4977eab9f935c32e09d715fe..aeb08e6404bc0c5a8c348f9b12296f1e62f8d4fb 100644
+index 16d392e42..aeb08e640 100644
 --- a/wgengine/magicsock/magicsock_test.go
 +++ b/wgengine/magicsock/magicsock_test.go
 @@ -580,7 +580,7 @@ func TestDERPActiveFuncCalledAfterConnect(t *testing.T) {
@@ -1362,7 +1403,7 @@ index 16d392e42e1a61ad4977eab9f935c32e09d715fe..aeb08e6404bc0c5a8c348f9b12296f1e
  	}
  	for _, tt := range testCases {
 diff --git a/wgengine/magicsock/relaymanager.go b/wgengine/magicsock/relaymanager.go
-index e4cd5eb9ff5376fa8eb8cfb83556ca370025b66a..c8b70eac6293ef9b27d0b29e0ce923581510f1ec 100644
+index e4cd5eb9f..c8b70eac6 100644
 --- a/wgengine/magicsock/relaymanager.go
 +++ b/wgengine/magicsock/relaymanager.go
 @@ -674,7 +674,7 @@ func (r *relayManager) handleHandshakeWorkDoneRunLoop(done relayEndpointHandshak
@@ -1374,3 +1415,6 @@ index e4cd5eb9ff5376fa8eb8cfb83556ca370025b66a..c8b70eac6293ef9b27d0b29e0ce92358
  	})
  }
  
+-- 
+2.34.1
+
